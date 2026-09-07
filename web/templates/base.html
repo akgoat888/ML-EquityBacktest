@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}AI Equities Desk{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body data-api="{{ api_url }}" data-page="{{ page }}" {% block body_attrs %}{% endblock %}>
+  <header class="top">
+    <div class="top-left">
+      <a class="home-btn {% if page == 'home' %}active{% endif %}" href="/">Home</a>
+      <div>
+        <div class="brand">AI Equities Desk</div>
+        <div class="sub">{% block subtitle %}High Buy / Buy / Hold / Sell{% endblock %}</div>
+      </div>
+    </div>
+    <div class="top-meta" id="api-pill">API {{ api_url }}</div>
+  </header>
+  {% block content %}{% endblock %}
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

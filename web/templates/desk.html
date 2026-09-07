@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Equities Desk</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ asset_v }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body
+  data-api="{{ api_url }}"
+  data-page="{{ page }}"
+  data-ticker="{{ ticker }}"
+  data-period="{{ period }}"
+  data-horizon="{{ horizon }}"
+>
+  <header class="top">
+    <div class="top-left">
+      <a class="home-btn" id="home-btn" href="/">Home</a>
+      <div>
+        <div class="brand">AI Equities Desk</div>
+        <div class="sub" id="page-sub">Home · ratings for the selected universe</div>
+      </div>
+    </div>
+    <nav class="nav" id="main-nav">
+      <a href="/options" data-view="options">Options</a>
+      <a href="/volume" data-view="volume">Volume</a>
+      <a href="/financials" data-view="financials">Financials</a>
+      <a href="/portfolios" data-view="portfolios">Portfolios</a>
+      <button type="button" class="icon-btn" id="shortcut-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+    </nav>
+  </header>
+
+  <form id="analyze-form" class="toolbar">
+    <label data-tool="ticker" class="field-ac">Ticker
+      <input id="ticker" name="ticker" placeholder="TSMC, NVDA, AEM…" value="{{ ticker }}"
+             autocomplete="off" role="combobox" aria-expanded="false" aria-controls="ticker-ac" />
+      <div class="ac-menu" id="ticker-ac" role="listbox" hidden></div>
+    </label>
+    <label data-tool="period">History
+      <select id="period">
+        <option {% if period == '2y' %}selected{% endif %}>2y</option>
+        <option {% if period == '5y' %}selected{% endif %}>5y</option>
+        <option {% if period == '10y' %}selected{% endif %}>10y</option>
+        <option {% if period == 'max' %}selected{% endif %}>max</option>
+      </select>
+    </label>
+    <label class="has-tip" data-tool="horizon">Horizon
+      <select id="horizon">
+        <option {% if horizon == '1' %}selected{% endif %}>1</option>
+        <option {% if horizon == '3' %}selected{% endif %}>3</option>
+        <option {% if horizon == '5' %}selected{% endif %}>5</option>
+        <option {% if horizon == '10' %}selected{% endif %}>10</option>
+        <option {% if horizon == '21' %}selected{% endif %}>21</option>
+      </select>
+      <span class="tip">Sessions the model looks ahead (5 = next week). Applies to Analysis, not the board scan.</span>
+    </label>
+    <div class="toolbar-sep" aria-hidden="true"></div>
+    <label data-tool="universe">Universe
+      <select id="universe">
+        <option value="mega">Mega liquid (~55)</option>
+        <option value="global" selected>Mega + ADRs / overseas</option>
+        <option value="nasdaq100">Nasdaq-100</option>
+        <option value="sp500">S&amp;P 500 + ADRs</option>
+        <option value="midcap">Mid-cap $2B–$10B</option>
+        <option value="smallcap">Small-cap $700M–$2B</option>
+      </select>
+    </label>
+    <button type="submit" class="primary" id="analyze-btn">Analysis</button>
+    <div id="live-quote" class="live-quote" hidden></div>
+    <span id="resolve-hint" class="hint toolbar-hint"></span>
+  </form>
+
+  <div class="recents" id="recents"></div>
+
+  <section id="view-home" class="view">
+    <form id="scan-form" class="toolbar compact">
+      <label class="check">
+        <input type="checkbox" id="deep" /> Deep walk-forward
+      </label>
+      <button type="submit" id="scan-btn">Refresh board</button>
+      <div class="scan-meta">
+        <div id="scan-status" class="hint"></div>
+        <div class="progress-wrap" id="progress-wrap" hidden>
+          <div class="progress"><div id="progress-bar"></div></div>
+        </div>
+      </div>
+    </form>
+
+    <section class="kpis" id="kpis"></section>
+
+    <div class="filters toolbar compact">
+      <label>Rating
+        <select id="f-rating">
+          <option value="ALL" selected>All</option>
+          <option>HIGH BUY</option>
+          <option>BUY</option>
+          <option>HOLD</option>
+          <option>SELL</option>
+        </select>
+      </label>
+      <label>Sector
+        <select id="f-sector">
+          <option value="ALL" selected>All</option>
+        </select>
+      </label>
+      <label>Min confidence
+        <span class="range-row">
+          <input type="range" id="f-conf" min="0" max="100" value="0" />
+          <span id="f-conf-lbl">0%</span>
+        </span>
+      </label>
+      <label>Search
+        <input id="f-q" placeholder="Ticker / name" />
+      </label>
+      <div class="toolbar-sep" aria-hidden="true"></div>
+      <label>Sort by
+        <select id="f-sort">
+          <option value="score">Score (high → low)</option>
+          <option value="confidence">Confidence</option>
+          <option value="p_up">P(up)</option>
+          <option value="rating">Rating</option>
+          <option value="ticker">Ticker (A → Z)</option>
+          <option value="price">Price</option>
+        </select>
+      </label>
+      <div class="toolbar-grow"></div>
+      <button type="button" id="f-all" class="ghost">Clear filters</button>
+    </div>
+    <div class="board-head">
+      <div class="board-count" id="board-count"></div>
+    </div>
+    <div class="filter-chips" id="filter-chips"></div>
+    <div id="board-empty" class="empty">No board for this universe yet. Changing universe auto-refreshes.</div>
+    <div id="board-list" class="board-grid"></div>
+  </section>
+
+  <section id="view-dive" class="view" hidden>
+    <div id="dive-empty" class="empty">Running analysis…</div>
+    <div id="dive" hidden></div>
+  </section>
+
+  <section id="view-options" class="view" hidden>
+    <p class="hint status-line">
+      <span id="options-status">Call/Put tape for the current month with session premium ≥ $1M. BUY/SELL is last vs bid/ask mid (not an exchange aggressor). SELL put / BUY call = bullish; BUY put / SELL call = bearish.</span>
+      <span class="period-tag" id="options-period"></span>
+      <span class="period-tag as-of-tag" id="options-as-of" hidden></span>
+    </p>
+    <section class="kpis" id="opt-kpis"></section>
+    <div class="filters toolbar compact">
+      <label>Sentiment
+        <select id="opt-rating">
+          <option value="ALL" selected>All</option>
+          <option value="HIGH BUY">Highly bullish</option>
+          <option value="BUY">Bullish</option>
+          <option value="HOLD">Hold</option>
+          <option value="SELL">Sell</option>
+        </select>
+      </label>
+      <label>Search
+        <input id="opt-q" placeholder="Ticker" />
+      </label>
+      <div class="toolbar-grow"></div>
+      <button type="button" id="opt-all" class="ghost">Clear filters</button>
+      <button type="button" class="primary" id="options-load">Load option tape</button>
+    </div>
+    <div class="board-count" id="opt-count"></div>
+    <div id="options-empty" class="empty">Open Options, enter a ticker (e.g. NVDA) or load the universe scan.</div>
+    <div id="options-list"></div>
+  </section>
+
+  <section id="view-volume" class="view" hidden>
+    <p class="hint status-line">
+      <span id="volume-status">Concentrated one-time prints: a $10M buy bar (e.g. someone lifting NVDA) is bullish. Yahoo does not name the buyer — each row is a 1m/5m/1h bar of at least the size below.</span>
+      <span class="period-tag" id="volume-period"></span>
+    </p>
+    <div class="toolbar compact">
+      <label>Min print
+        <select id="min-print">
+          <option value="5000000">$5M</option>
+          <option value="10000000" selected>$10M</option>
+          <option value="25000000">$25M</option>
+          <option value="50000000">$50M</option>
+          <option value="100000000">$100M</option>
+        </select>
+      </label>
+      <button type="button" class="primary" id="volume-load">Load large prints</button>
+      <span class="hint">Click any column header to sort.</span>
+    </div>
+    <div id="volume-empty" class="empty">Open Volume, set min print size, enter a ticker (e.g. NVDA) or load the universe.</div>
+    <div id="volume-summary"></div>
+    <div id="volume-list"></div>
+  </section>
+
+  <section id="view-financials" class="view" hidden>
+    <div class="toolbar compact fin-toolbar">
+      <label>Statements
+        <div class="seg" id="fin-freq" role="tablist" aria-label="Statement period">
+          <button type="button" data-freq="quarterly" class="active">Quarterly</button>
+          <button type="button" data-freq="annual">Annual</button>
+        </div>
+      </label>
+      <div id="fin-quarter-wrap" class="fin-period-picks">
+        <label>Quarter
+          <div class="seg" id="fin-quarter" role="tablist" aria-label="Fiscal quarter">
+            <button type="button" data-quarter="1">Q1</button>
+            <button type="button" data-quarter="2">Q2</button>
+            <button type="button" data-quarter="3">Q3</button>
+            <button type="button" data-quarter="4">Q4</button>
+          </div>
+        </label>
+      </div>
+      <label class="fin-year-pick">Year
+        <select id="fin-year" aria-label="Fiscal year"></select>
+      </label>
+      <button type="button" class="primary" id="fin-load">Load statements</button>
+    </div>
+    <div id="fin-empty" class="empty">Type a ticker, pick quarter + year (or annual year), then click Load statements.</div>
+    <div id="fin" hidden></div>
+  </section>
+
+  <section id="view-portfolios" class="view" hidden>
+    <div class="port-head">
+      <div>
+        <h2 class="port-title">Model portfolios</h2>
+        <p class="hint" id="port-status">Pick a horizon. Each horizon gets four sleeves — High, Medium, Low and Extremely low risk — with expected return, a 1σ range and a confidence score.</p>
+      </div>
+      <div class="port-controls">
+        <label class="port-pick">Universe
+          <select id="port-universe" aria-label="Universe">
+            <option value="mega">Mega liquid (~55)</option>
+            <option value="global">Mega + ADRs / overseas</option>
+            <option value="nasdaq100">Nasdaq-100</option>
+            <option value="sp500">S&amp;P 500 + ADRs</option>
+            <option value="midcap">Mid-cap $2B–$10B</option>
+            <option value="smallcap">Small-cap $700M–$2B</option>
+          </select>
+        </label>
+        <div class="seg" id="port-years" role="tablist" aria-label="Horizon">
+          <button type="button" data-years="1" class="active">1 year</button>
+          <button type="button" data-years="3">3 years</button>
+          <button type="button" data-years="5">5 years</button>
+          <button type="button" data-years="10">10 years</button>
+        </div>
+        <button type="button" class="primary" id="port-load">Refresh</button>
+      </div>
+    </div>
+    <div id="port-empty" class="empty">Open Portfolios and pick a horizon. Sleeves are built from the current universe board plus fundamentals and long-run history.</div>
+    <div id="port-summary" class="port-summary"></div>
+    <div id="port-chart-wrap" class="chart-box port-chart" hidden>
+      <div class="chart-title"><span>Growth of $10,000 · expected path per sleeve</span><span class="hint" id="port-chart-sub"></span></div>
+      <div class="chart-canvas"><canvas id="port-chart"></canvas></div>
+    </div>
+    <div id="port-list" class="port-grid"></div>
+  </section>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <div class="sheet-backdrop" id="shortcut-sheet" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <div class="sheet-head">
+        <div>
+          <h3>Keyboard shortcuts</h3>
+          <p class="hint">Shortcuts are ignored while typing in a field.</p>
+        </div>
+        <button type="button" class="icon-btn" id="shortcut-close" aria-label="Close">✕</button>
+      </div>
+      <div class="shortcut-list">
+        <div class="shortcut-row"><span>Focus ticker box</span><kbd>/</kbd></div>
+        <div class="shortcut-row"><span>Run analysis on typed ticker</span><kbd>Enter</kbd></div>
+        <div class="shortcut-row"><span>Reload the current view</span><kbd>r</kbd></div>
+        <div class="shortcut-row"><span>Go home</span><kbd>g</kbd> <kbd>h</kbd></div>
+        <div class="shortcut-row"><span>Go to Options</span><kbd>g</kbd> <kbd>o</kbd></div>
+        <div class="shortcut-row"><span>Go to Volume</span><kbd>g</kbd> <kbd>v</kbd></div>
+        <div class="shortcut-row"><span>Go to Financials</span><kbd>g</kbd> <kbd>f</kbd></div>
+        <div class="shortcut-row"><span>Go to Portfolios</span><kbd>g</kbd> <kbd>p</kbd></div>
+        <div class="shortcut-row"><span>Close menus / this sheet</span><kbd>Esc</kbd></div>
+        <div class="shortcut-row"><span>Show this sheet</span><kbd>?</kbd></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_v }}"></script>
+</body>
+</html>

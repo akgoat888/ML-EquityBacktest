@@ -1,0 +1,12 @@
+.cache/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.joblib
+*.pkl
+.env
+.DS_Store
+.streamlit/secrets.toml
+models/
+*.log

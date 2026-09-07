@@ -1,0 +1,10 @@
+.cache
+.venv
+venv
+__pycache__
+*.pkl
+.git
+.cursor
+models
+*.log
+.DS_Store
