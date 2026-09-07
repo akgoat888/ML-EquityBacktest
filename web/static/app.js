@@ -10,7 +10,11 @@ const state = {
   optSort: { key: "premium", dir: "desc" },
   volPayload: null,
   volSort: { key: "notional", dir: "desc" },
+  boardCache: {},
+  boardAbort: null,
 };
+
+const UNIVERSE_IDS = ["mega", "global", "nasdaq100", "sp500", "midcap", "smallcap"];
 
 const UNIVERSE_LABEL = {
   mega: "Mega liquid",
@@ -283,6 +287,7 @@ async function api(path, opts = {}) {
       lastErr = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
       if (res.status !== 404 && res.status !== 405) break;
     } catch (err) {
+      if (err && err.name === "AbortError") throw err;
       lastErr = err;
     }
   }
@@ -1034,10 +1039,66 @@ function renderBoard() {
   });
 }
 
-async function loadBoard({ quiet = false } = {}) {
+function boardCacheKey(uni) {
+  return "desk_board_" + String(uni || "global").toLowerCase();
+}
+
+function readBoardCache(uni) {
+  if (state.boardCache[uni]) return state.boardCache[uni];
+  try {
+    const raw = sessionStorage.getItem(boardCacheKey(uni));
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && typeof data === "object") {
+      state.boardCache[uni] = data;
+      return data;
+    }
+  } catch { /* quota / parse */ }
+  return null;
+}
+
+function writeBoardCache(uni, data) {
+  if (!data || !uni) return;
+  state.boardCache[uni] = data;
+  try {
+    sessionStorage.setItem(boardCacheKey(uni), JSON.stringify(data));
+  } catch { /* payload may exceed quota; memory cache still hits */ }
+}
+
+function prefetchBoards(except) {
+  UNIVERSE_IDS.forEach((u) => {
+    if (u === except || state.boardCache[u]) return;
+    api("/board?universe=" + encodeURIComponent(u))
+      .then((data) => {
+        if ((data.rows || []).length) writeBoardCache(u, data);
+      })
+      .catch(() => {});
+  });
+}
+
+async function loadBoard({ quiet = false, autoScan = true } = {}) {
   const uni = $("universe").value;
   localStorage.setItem("desk_universe", uni);
-  const data = await api("/board?universe=" + encodeURIComponent(uni));
+  const cached = readBoardCache(uni);
+  if (cached) paintBoard(cached, uni, { quiet: true, autoScan: false });
+  else if (!quiet) skeletonCards($("board-list"), 6);
+  if (state.boardAbort) state.boardAbort.abort();
+  const ac = new AbortController();
+  state.boardAbort = ac;
+  try {
+    const data = await api("/board?universe=" + encodeURIComponent(uni), { signal: ac.signal });
+    if ($("universe").value !== uni) return;
+    writeBoardCache(uni, data);
+    paintBoard(data, uni, { quiet, autoScan });
+    prefetchBoards(uni);
+  } catch (err) {
+    if (err && err.name === "AbortError") return;
+    if (cached) return;
+    throw err;
+  }
+}
+
+function paintBoard(data, uni, { quiet = false, autoScan = true } = {}) {
   state.rows = data.rows || [];
   fillSectors(state.rows);
   renderKpis(data.counts || {}, data.n, data.as_of, uni, {
@@ -1054,7 +1115,7 @@ async function loadBoard({ quiet = false } = {}) {
   renderBoard();
   if (!quiet) updateScanStatus(data.job || {});
   if (scanning) startPoll();
-  else if (data.stale && state.view === "home" && !state.autoScan) {
+  else if (autoScan && data.stale && state.view === "home" && !state.autoScan) {
     state.autoScan = true;
     const through = data.session || data.as_of || "an earlier session";
     toast(`Board still shows ${through}. Pulling the ${data.last_session} close…`, "info", 7000);
@@ -1532,7 +1593,7 @@ function paintOptions() {
   bindTickerLinks(el);
 }
 
-async function loadOptions() {
+async function loadOptions({ autoRefresh = true } = {}) {
   const uni = $("universe").value;
   const t = $("ticker").value.trim();
   const ym = tapeYM();
@@ -1547,7 +1608,7 @@ async function loadOptions() {
     }
     skeletonRows($("options-list"), 10);
     let data = await api("/options/flags?universe=" + encodeURIComponent(uni) + ymQuery());
-    if (!(data.rows || []).length && (!data.job || data.job.status !== "running")) {
+    if (autoRefresh && !(data.rows || []).length && (!data.job || data.job.status !== "running")) {
       await api("/options/refresh", { method: "POST", body: JSON.stringify({ universe: uni, year: ym.year, month: ym.month }) });
       data = await api("/options/flags?universe=" + encodeURIComponent(uni) + ymQuery());
     }
@@ -1679,7 +1740,7 @@ function paintVolume() {
   bindTickerLinks(el);
 }
 
-async function loadVolume() {
+async function loadVolume({ autoRefresh = true } = {}) {
   const uni = $("universe").value;
   const t = $("ticker").value.trim();
   const ym = tapeYM();
@@ -1694,7 +1755,7 @@ async function loadVolume() {
     }
     skeletonRows($("volume-list"), 10);
     let data = await api("/volume/large?universe=" + encodeURIComponent(uni) + ymQuery() + minPrintQuery());
-    if (!(data.rows || []).length && (!data.job || data.job.status !== "running")) {
+    if (autoRefresh && !(data.rows || []).length && (!data.job || data.job.status !== "running")) {
       await api("/volume/refresh", { method: "POST", body: JSON.stringify({ universe: uni, year: ym.year, month: ym.month }) });
       data = await api("/volume/large?universe=" + encodeURIComponent(uni) + ymQuery() + minPrintQuery());
     }
@@ -2205,17 +2266,16 @@ function bindUi() {
   }
   $("universe").addEventListener("change", () => {
     syncPortUniverse();
-    refreshUniverse();
     if (state.view === "home") {
-      loadBoard().catch((err) => {
+      loadBoard({ autoScan: false }).catch((err) => {
         $("board-empty").textContent = err.message;
         $("board-empty").hidden = false;
         toast(err.message, "err");
       });
     }
-    if (state.view === "options") loadOptions();
-    if (state.view === "volume") loadVolume();
-    if (state.view === "portfolios") loadPortfolios(true);
+    if (state.view === "options") loadOptions({ autoRefresh: false });
+    if (state.view === "volume") loadVolume({ autoRefresh: false });
+    if (state.view === "portfolios") loadPortfolios(false);
   });
   $("scan-form").addEventListener("submit", async (e) => {
     e.preventDefault();

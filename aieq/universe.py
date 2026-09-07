@@ -29,8 +29,10 @@ SMALL_CAP_MAX = 2_000_000_000.0
 MID_CAP_MIN = 2_000_000_000.0
 MID_CAP_MAX = 10_000_000_000.0
 _CAP_TTL_SEC = 24 * 3600
+_LIST_TTL_SEC = 24 * 3600
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; AIEquitiesDesk/2.0)"}
 _mcap_lock = threading.Lock()
+_list_mem: dict[str, tuple[float, list[str]]] = {}
 
 
 def _yahoo_class_share(sym: str) -> str:
@@ -83,20 +85,48 @@ def _wiki_tickers(url: str, fallback: list[str] | None = None) -> list[str]:
     return list(fallback)
 
 
+def _cached_list(name: str, loader) -> list[str]:
+    now = time.time()
+    hit = _list_mem.get(name)
+    if hit and now - hit[0] < _LIST_TTL_SEC and hit[1]:
+        return list(hit[1])
+    from aieq.store import doc_age_hours, get_doc, put_doc
+
+    try:
+        age = doc_age_hours("wiki", name)
+        if age is not None and age * 3600 < _LIST_TTL_SEC:
+            payload = get_doc("wiki", name)
+            rows = payload.get("tickers") if isinstance(payload, dict) else payload
+            if isinstance(rows, list) and rows:
+                tickers = [str(x) for x in rows]
+                _list_mem[name] = (now, tickers)
+                return list(tickers)
+    except Exception:
+        pass
+    tickers = list(loader() or [])
+    if tickers:
+        _list_mem[name] = (now, tickers)
+        try:
+            put_doc("wiki", name, {"tickers": tickers})
+        except Exception:
+            pass
+    return tickers
+
+
 def fetch_sp500() -> list[str]:
-    return _wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+    return _cached_list("sp500", lambda: _wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"))
 
 
 def fetch_nasdaq100() -> list[str]:
-    return _wiki_tickers("https://en.wikipedia.org/wiki/Nasdaq-100")
+    return _cached_list("nasdaq100", lambda: _wiki_tickers("https://en.wikipedia.org/wiki/Nasdaq-100"))
 
 
 def fetch_sp400() -> list[str]:
-    return _wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies")
+    return _cached_list("sp400", lambda: _wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"))
 
 
 def fetch_sp600() -> list[str]:
-    return _wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_600_companies")
+    return _cached_list("sp600", lambda: _wiki_tickers("https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"))
 
 
 def _mcap_cache() -> dict[str, Any]:

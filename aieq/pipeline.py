@@ -314,6 +314,8 @@ def scan_universe(
 
 
 BOARD_PATH = CACHE_DIR / "universe_board.json"
+_board_lock = threading.Lock()
+_board_mem: dict[str, tuple[pd.DataFrame, str | None, str | None]] = {}
 
 
 def _spark_points(ohlcv: pd.DataFrame, n: int = 90) -> list[dict[str, Any]]:
@@ -376,6 +378,19 @@ def _jsonable_row(row: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _board_mem_key(universe: str | None) -> str:
+    return "".join(c if c.isalnum() else "_" for c in (universe or "default").strip().lower()) or "default"
+
+
+def _remember_board(df: pd.DataFrame, as_of: str | None, universe: str | None) -> None:
+    key = _board_mem_key(universe)
+    snap = (df.copy() if df is not None else pd.DataFrame(), as_of, universe)
+    with _board_lock:
+        _board_mem[key] = snap
+        if universe:
+            _board_mem["default"] = snap
+
+
 def save_board(df: pd.DataFrame, universe: str | None = None) -> None:
     rows = [_jsonable_row(r) for r in df.to_dict(orient="records")]
     payload = {
@@ -388,9 +403,10 @@ def save_board(df: pd.DataFrame, universe: str | None = None) -> None:
     text = json.dumps(payload, default=str)
     from aieq.store import put_doc
 
-    key = "".join(c if c.isalnum() else "_" for c in (universe or "default").strip().lower()) or "default"
+    key = _board_mem_key(universe)
     put_doc("board", key, payload)
     put_doc("board", "default", payload)
+    _remember_board(df, payload["as_of"], universe)
     try:
         root = ensure_cache_dir()
         _board_path(universe).write_text(text, encoding="utf-8")
@@ -408,30 +424,45 @@ def _read_board_file(path) -> tuple[pd.DataFrame, str | None, str | None]:
 def load_board(universe: str | None = None) -> tuple[pd.DataFrame, str | None, str | None]:
     from aieq.store import get_doc
 
-    key = "".join(c if c.isalnum() else "_" for c in (universe or "default").strip().lower()) or "default"
+    key = _board_mem_key(universe)
+    with _board_lock:
+        hit = _board_mem.get(key)
+        if hit is not None:
+            df, as_of, uni = hit
+            if universe and uni and uni != universe:
+                pass
+            else:
+                return df.copy(), as_of, uni or universe
     try:
         if universe:
             named = get_doc("board", key)
             if named:
                 rows = named.get("rows") or []
-                return pd.DataFrame(rows), named.get("as_of"), named.get("universe")
+                out = pd.DataFrame(rows), named.get("as_of"), named.get("universe")
+                _remember_board(out[0], out[1], out[2] or universe)
+                return out
         latest = get_doc("board", "default")
         if latest:
             uni = latest.get("universe")
             if universe and uni and uni != universe:
                 return pd.DataFrame(), None, universe
             rows = latest.get("rows") or []
-            return pd.DataFrame(rows), latest.get("as_of"), uni or universe
+            out = pd.DataFrame(rows), latest.get("as_of"), uni or universe
+            _remember_board(out[0], out[1], out[2])
+            return out
     except Exception:
         pass
     named = _board_path(universe)
     try:
         if universe and named.exists() and named != BOARD_PATH:
-            return _read_board_file(named)
+            loaded = _read_board_file(named)
+            _remember_board(*loaded)
+            return loaded
         if BOARD_PATH.exists():
             df, as_of, uni = _read_board_file(BOARD_PATH)
             if universe and uni and uni != universe:
                 return pd.DataFrame(), None, universe
+            _remember_board(df, as_of, uni or universe)
             return df, as_of, uni or universe
     except Exception:
         pass
