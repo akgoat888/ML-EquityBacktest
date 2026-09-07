@@ -5,7 +5,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, roc_auc_score, log_loss
 
 from aieq.config import Settings, DEFAULT
 
@@ -47,7 +46,7 @@ def _make_xgb():
         )
         return clf, reg, "xgboost"
     except Exception:
-        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor  # type: ignore
 
         clf = GradientBoostingClassifier(
             n_estimators=180,
@@ -78,6 +77,38 @@ class WalkForwardResult:
     feature_names: list[str] = field(default_factory=list)
 
 
+def _accuracy_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    if len(y_true) == 0:
+        return 0.0
+    return float((np.asarray(y_true) == np.asarray(y_pred)).mean())
+
+
+def _log_loss(y_true: np.ndarray, p: np.ndarray) -> float:
+    y = np.asarray(y_true, dtype=float)
+    prob = np.clip(np.asarray(p, dtype=float), 1e-6, 1.0 - 1e-6)
+    if len(y) == 0:
+        return float("nan")
+    return float(-(y * np.log(prob) + (1.0 - y) * np.log(1.0 - prob)).mean())
+
+
+def _roc_auc_score(y_true: np.ndarray, scores: np.ndarray) -> float:
+    y = np.asarray(y_true)
+    s = np.asarray(scores, dtype=float)
+    pos = s[y == 1]
+    neg = s[y == 0]
+    if len(pos) == 0 or len(neg) == 0:
+        return float("nan")
+    # Mann–Whitney / Wilcoxon rank-sum, ties count as 0.5
+    order = np.argsort(np.concatenate([neg, pos]), kind="mergesort")
+    ranks = np.empty_like(order, dtype=float)
+    ranks[order] = np.arange(1, len(order) + 1, dtype=float)
+    n_neg = len(neg)
+    n_pos = len(pos)
+    pos_ranks = ranks[n_neg:]
+    u = float(pos_ranks.sum() - n_pos * (n_pos + 1) / 2.0)
+    return u / (n_pos * n_neg)
+
+
 def _importance_map(model: Any, names: list[str]) -> dict[str, float]:
     imp = None
     if hasattr(model, "feature_importances_"):
@@ -93,7 +124,7 @@ def _safe_auc(y_true: np.ndarray, p: np.ndarray) -> float:
     try:
         if len(np.unique(y_true)) < 2:
             return float("nan")
-        return float(roc_auc_score(y_true, p))
+        return float(_roc_auc_score(y_true, p))
     except Exception:
         return float("nan")
 
@@ -166,10 +197,10 @@ def walk_forward(
         p = oos["p_up"].to_numpy()
         y = oos["y"].to_numpy()
         pred = (p >= 0.5).astype(int)
-        metrics["oos_accuracy"] = float(accuracy_score(y, pred))
+        metrics["oos_accuracy"] = float(_accuracy_score(y, pred))
         metrics["oos_auc"] = _safe_auc(y, p)
         try:
-            metrics["oos_logloss"] = float(log_loss(y, np.clip(p, 1e-6, 1 - 1e-6)))
+            metrics["oos_logloss"] = float(_log_loss(y, p))
         except Exception:
             metrics["oos_logloss"] = float("nan")
         try:
