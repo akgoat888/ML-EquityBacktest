@@ -1,11 +1,3 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": null,
-  "functions": {
-    "asgi.py": {
-      "maxDuration": 300,
-      "memory": 2048,
-      "excludeFiles": "{.cache/**,.venv/**,**/__pycache__/**,**/*.pkl,models/**}"
-    }
-  }
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }
