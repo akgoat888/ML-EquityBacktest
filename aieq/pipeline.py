@@ -383,6 +383,8 @@ def _board_mem_key(universe: str | None) -> str:
 
 
 def _remember_board(df: pd.DataFrame, as_of: str | None, universe: str | None) -> None:
+    if df is None or df.empty:
+        return
     key = _board_mem_key(universe)
     snap = (df.copy() if df is not None else pd.DataFrame(), as_of, universe)
     with _board_lock:

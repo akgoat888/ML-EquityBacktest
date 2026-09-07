@@ -946,6 +946,7 @@ function sortBoardRows(rows) {
 
 function fillSectors(rows) {
   const sel = $("f-sector");
+  if (!sel) return;
   const current = sel.value || "ALL";
   const sectors = [...new Set(rows.map((r) => String(r.sector || "—")))].sort();
   sel.innerHTML = `<option value="ALL">All</option>` + sectors.map((s) =>
@@ -1044,21 +1045,24 @@ function boardCacheKey(uni) {
 }
 
 function readBoardCache(uni) {
-  if (state.boardCache[uni]) return state.boardCache[uni];
+  const hit = state.boardCache[uni];
+  if (hit && (hit.rows || []).length) return hit;
   try {
     const raw = sessionStorage.getItem(boardCacheKey(uni));
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (data && typeof data === "object") {
+    if (data && (data.rows || []).length) {
       state.boardCache[uni] = data;
       return data;
     }
+    sessionStorage.removeItem(boardCacheKey(uni));
   } catch { /* quota / parse */ }
+  delete state.boardCache[uni];
   return null;
 }
 
 function writeBoardCache(uni, data) {
-  if (!data || !uni) return;
+  if (!data || !uni || !(data.rows || []).length) return;
   state.boardCache[uni] = data;
   try {
     sessionStorage.setItem(boardCacheKey(uni), JSON.stringify(data));
@@ -1076,11 +1080,11 @@ function prefetchBoards(except) {
   });
 }
 
-async function loadBoard({ quiet = false, autoScan = true } = {}) {
+async function loadBoard({ quiet = false, fillEmpty = true } = {}) {
   const uni = $("universe").value;
   localStorage.setItem("desk_universe", uni);
   const cached = readBoardCache(uni);
-  if (cached) paintBoard(cached, uni, { quiet: true, autoScan: false });
+  if (cached) paintBoard(cached, uni, { quiet: true, fillEmpty: false });
   else if (!quiet) skeletonCards($("board-list"), 6);
   if (state.boardAbort) state.boardAbort.abort();
   const ac = new AbortController();
@@ -1089,8 +1093,8 @@ async function loadBoard({ quiet = false, autoScan = true } = {}) {
     const data = await api("/board?universe=" + encodeURIComponent(uni), { signal: ac.signal });
     if ($("universe").value !== uni) return;
     writeBoardCache(uni, data);
-    paintBoard(data, uni, { quiet, autoScan });
-    prefetchBoards(uni);
+    paintBoard(data, uni, { quiet, fillEmpty });
+    if ((data.rows || []).length) prefetchBoards(uni);
   } catch (err) {
     if (err && err.name === "AbortError") return;
     if (cached) return;
@@ -1098,7 +1102,7 @@ async function loadBoard({ quiet = false, autoScan = true } = {}) {
   }
 }
 
-function paintBoard(data, uni, { quiet = false, autoScan = true } = {}) {
+function paintBoard(data, uni, { quiet = false, fillEmpty = true } = {}) {
   state.rows = data.rows || [];
   fillSectors(state.rows);
   renderKpis(data.counts || {}, data.n, data.as_of, uni, {
@@ -1111,11 +1115,14 @@ function paintBoard(data, uni, { quiet = false, autoScan = true } = {}) {
     ? ""
     : scanning
       ? `Scanning ${UNIVERSE_LABEL[uni] || uni}… names appear as they finish.`
-      : `No board for ${UNIVERSE_LABEL[uni] || uni} yet. Click Refresh board.`;
+      : `Loading ${UNIVERSE_LABEL[uni] || uni}…`;
   renderBoard();
   if (!quiet) updateScanStatus(data.job || {});
   if (scanning) startPoll();
-  else if (autoScan && data.stale && state.view === "home" && !state.autoScan) {
+  else if (fillEmpty && !state.rows.length) {
+    const busy = $("scan-btn") && $("scan-btn").classList.contains("is-busy");
+    if (!busy) refreshUniverse();
+  } else if (fillEmpty && data.stale && state.view === "home" && !state.autoScan) {
     state.autoScan = true;
     const through = data.session || data.as_of || "an earlier session";
     toast(`Board still shows ${through}. Pulling the ${data.last_session} close…`, "info", 7000);
@@ -1162,7 +1169,7 @@ function startPoll() {
       const job = await api("/board/status");
       updateScanStatus(job);
       if (job.status === "running") {
-        await loadBoard({ quiet: true });
+        await loadBoard({ quiet: true, fillEmpty: false });
       } else {
         clearInterval(state.poll);
         state.poll = null;
@@ -2267,7 +2274,7 @@ function bindUi() {
   $("universe").addEventListener("change", () => {
     syncPortUniverse();
     if (state.view === "home") {
-      loadBoard({ autoScan: false }).catch((err) => {
+      loadBoard({ fillEmpty: true }).catch((err) => {
         $("board-empty").textContent = err.message;
         $("board-empty").hidden = false;
         toast(err.message, "err");
