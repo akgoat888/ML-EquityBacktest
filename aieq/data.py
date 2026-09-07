@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import requests
-from aieq.config import CACHE_DIR, Settings, DEFAULT
+from aieq.config import Settings, DEFAULT, ensure_cache_dir
 from aieq.yahoo import configure, gated, yf_ticker
 
 configure()
@@ -48,9 +48,9 @@ def _bars_behind_session(df: pd.DataFrame) -> bool:
 
 
 def _cache_path(key: str) -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    root = ensure_cache_dir()
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in f"v2_{key}")
-    return CACHE_DIR / f"{safe}.pkl"
+    return root / f"{safe}.pkl"
 
 
 def _load_cache(key: str, ttl_hours: float) -> Any | None:

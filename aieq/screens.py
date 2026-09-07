@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from aieq.config import CACHE_DIR, DEFAULT, Settings
+from aieq.config import DEFAULT, Settings, ensure_cache_dir
 from aieq.data import fetch_intraday, fetch_ohlcv, _month_bounds
 from aieq.symbols import resolve_symbol
 from aieq.yahoo import gated, yf_ticker
@@ -864,10 +864,9 @@ def save_screen(kind: str, universe: str, rows: list[dict[str, Any]], extra: dic
         payload.update(extra)
     put_doc("screen", f"{kind}_{universe}", payload)
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = CACHE_DIR / f"{kind}_{universe}.json"
+        path = ensure_cache_dir() / f"{kind}_{universe}.json"
         path.write_text(json.dumps(payload, default=str), encoding="utf-8")
-    except Exception:
+    except OSError:
         pass
 
 
@@ -884,7 +883,7 @@ def load_screen(kind: str, universe: str) -> dict[str, Any]:
             return payload
     except Exception:
         pass
-    path = CACHE_DIR / f"{kind}_{universe}.json"
+    path = ensure_cache_dir() / f"{kind}_{universe}.json"
     if not path.exists():
         return empty
     try:

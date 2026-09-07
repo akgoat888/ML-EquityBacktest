@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from aieq.backtest import BacktestReport, run_backtest
-from aieq.config import CACHE_DIR, DEFAULT, Settings
+from aieq.config import CACHE_DIR, DEFAULT, Settings, ensure_cache_dir
 from aieq.consensus import (
     AgentVote,
     Consensus,
@@ -377,7 +377,6 @@ def _jsonable_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def save_board(df: pd.DataFrame, universe: str | None = None) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     rows = [_jsonable_row(r) for r in df.to_dict(orient="records")]
     payload = {
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -393,10 +392,10 @@ def save_board(df: pd.DataFrame, universe: str | None = None) -> None:
     put_doc("board", key, payload)
     put_doc("board", "default", payload)
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        root = ensure_cache_dir()
         _board_path(universe).write_text(text, encoding="utf-8")
-        BOARD_PATH.write_text(text, encoding="utf-8")
-    except Exception:
+        (root / "universe_board.json").write_text(text, encoding="utf-8")
+    except OSError:
         pass
 
 

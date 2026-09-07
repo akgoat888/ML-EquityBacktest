@@ -258,5 +258,8 @@ def api_portfolios():
     refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
     try:
         return jsonify(suggest_portfolios(universe=uni, years=years, refresh=refresh))
-    except Exception as exc:
-        return _json_error(exc, 500)
+    except Exception:
+        from aieq.portfolios import _empty_portfolios, load_portfolios
+
+        cached = load_portfolios(uni, years)
+        return jsonify(cached or _empty_portfolios(uni, years))

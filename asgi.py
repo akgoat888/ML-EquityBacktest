@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import aieq.config  # noqa: F401  — pin caches to /tmp on Vercel before other imports
+
 from fastapi import FastAPI
 from fastapi.middleware.wsgi import WSGIMiddleware
 

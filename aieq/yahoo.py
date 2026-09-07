@@ -22,6 +22,17 @@ def configure() -> None:
     if _configured:
         return
     _configured = True
+    from aieq.config import ensure_cache_dir
+
+    tz_dir = ensure_cache_dir() / "yf-tz"
+    try:
+        tz_dir.mkdir(parents=True, exist_ok=True)
+        yf.set_tz_cache_location(str(tz_dir))
+    except Exception:
+        try:
+            yf.set_tz_cache_location("/tmp/yf-tz")
+        except Exception:
+            pass
     for name in ("yfinance", "yfinance.screener", "peewee", "urllib3", "yfinance.utils"):
         logging.getLogger(name).setLevel(logging.CRITICAL)
     # ThreadPoolExecutor registers an atexit join. Workers blocked on Yahoo

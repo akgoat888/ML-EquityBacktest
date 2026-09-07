@@ -266,8 +266,11 @@ def portfolios(
 
     try:
         return suggest_portfolios(universe=universe, years=years, refresh=refresh)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception:
+        from aieq.portfolios import _empty_portfolios, load_portfolios
+
+        cached = load_portfolios(universe, years)
+        return cached or _empty_portfolios(universe, years)
 
 
 @app.get("/financials")

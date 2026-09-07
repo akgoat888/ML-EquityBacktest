@@ -51,7 +51,7 @@ export ALPHA_VANTAGE_API_KEY=...
 export DATABASE_URL=postgresql://user:pass@host/neondb?sslmode=require
 ```
 
-`DATABASE_URL` (or `POSTGRES_URL`) stores boards, option/volume tapes, universes, portfolios, and the Yahoo cache in Postgres. Without it the desk still uses `.cache/` files. Neon or Vercel Postgres is the usual hosted option. `/health` reports `"store": "postgres"` or `"files"`.
+`DATABASE_URL` (or `POSTGRES_URL`) stores boards, option/volume tapes, universes, portfolios, and the Yahoo cache in Postgres. Without it the desk still uses `.cache/` locally, or `/tmp` on Vercel (ephemeral). `/health` reports `"store": "postgres"` or `"files"`.
 
 ## Deploy on Vercel
 

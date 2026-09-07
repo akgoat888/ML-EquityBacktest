@@ -17,7 +17,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from aieq.config import CACHE_DIR, Settings
+from aieq.config import Settings, ensure_cache_dir
 from aieq.data import fetch_fundamentals, fetch_ohlcv
 from aieq.pipeline import load_board
 from aieq.universe import universe_tickers
@@ -179,9 +179,8 @@ def _enrich(row: dict[str, Any], ballast: bool = False) -> dict[str, Any] | None
 
 
 def _enrich_cache_path(universe: str):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() else "_" for c in universe.strip().lower()) or "global"
-    return CACHE_DIR / f"portfolio_names_{safe}.json"
+    return ensure_cache_dir() / f"portfolio_names_{safe}.json"
 
 
 def _board_rows(universe: str) -> list[dict[str, Any]]:
@@ -587,9 +586,8 @@ def _sleeve(tier: dict[str, Any], holdings: list[dict[str, Any]], h: int) -> dic
 # --------------------------------------------------------------------------- public
 
 def _cache_path(universe: str, years: int):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() else "_" for c in universe.strip().lower()) or "global"
-    return CACHE_DIR / f"portfolios_{safe}_{int(years)}y.json"
+    return ensure_cache_dir() / f"portfolios_{safe}_{int(years)}y.json"
 
 
 def load_portfolios(universe: str, years: int = 1) -> dict[str, Any] | None:
@@ -722,40 +720,62 @@ def _horizon_switches(
         sleeve.pop("upgrades", None)
 
 
-def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool = False) -> dict[str, Any]:
-    universe = (universe or "global").strip().lower()
-    years = int(years) if int(years) in HORIZONS else min(HORIZONS, key=lambda h: abs(h - int(years)))
-    if not refresh:
-        cached = load_portfolios(universe, years)
-        if cached:
-            return cached
-    names = _enriched_names(universe, refresh)
-    scored = _score_names(names, years)
-    built = _build_sleeves(scored, years)
-    idx = HORIZONS.index(years)
-    prev_years = HORIZONS[idx - 1] if idx > 0 else None
-    prev_built = _build_sleeves(_score_names(names, prev_years), prev_years) if prev_years else None
-    _horizon_switches(built, prev_built, scored, years, prev_years)
-    sleeves = [built[t["id"]] for t in TIERS]
-    payload = {
+def _empty_portfolios(universe: str, years: int, note: str | None = None) -> dict[str, Any]:
+    return {
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "universe": universe,
         "years": years,
         "horizons": list(HORIZONS),
-        "n_candidates": len(scored),
-        "note": (
+        "n_candidates": 0,
+        "note": note
+        or (
             f"{years}-year figures are model estimates blending street targets, fundamental growth, "
-            "quality, valuation, realised CAGR, momentum and the desk rating — weights shift toward "
-            "fundamentals as the horizon lengthens. Confidence reflects data completeness, signal "
-            "agreement, volatility and history depth. Not a forecast or advice."
+            "quality, valuation, realised CAGR, momentum and the desk rating. Not a forecast or advice."
         ),
-        "sleeves": sleeves,
+        "sleeves": [],
     }
-    from aieq.store import put_doc
 
-    put_doc("portfolio", f"{universe}_{int(years)}y", payload)
+
+def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool = False) -> dict[str, Any]:
+    universe = (universe or "global").strip().lower()
+    years = int(years) if int(years) in HORIZONS else min(HORIZONS, key=lambda h: abs(h - int(years)))
     try:
-        _cache_path(universe, years).write_text(json.dumps(payload, default=str), encoding="utf-8")
-    except Exception:
-        pass
-    return payload
+        if not refresh:
+            cached = load_portfolios(universe, years)
+            if cached:
+                return cached
+        names = _enriched_names(universe, refresh)
+        scored = _score_names(names, years)
+        built = _build_sleeves(scored, years)
+        idx = HORIZONS.index(years)
+        prev_years = HORIZONS[idx - 1] if idx > 0 else None
+        prev_built = _build_sleeves(_score_names(names, prev_years), prev_years) if prev_years else None
+        _horizon_switches(built, prev_built, scored, years, prev_years)
+        sleeves = [built[t["id"]] for t in TIERS]
+        payload = {
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "universe": universe,
+            "years": years,
+            "horizons": list(HORIZONS),
+            "n_candidates": len(scored),
+            "note": (
+                f"{years}-year figures are model estimates blending street targets, fundamental growth, "
+                "quality, valuation, realised CAGR, momentum and the desk rating — weights shift toward "
+                "fundamentals as the horizon lengthens. Confidence reflects data completeness, signal "
+                "agreement, volatility and history depth. Not a forecast or advice."
+            ),
+            "sleeves": sleeves,
+        }
+        from aieq.store import put_doc
+
+        put_doc("portfolio", f"{universe}_{int(years)}y", payload)
+        try:
+            _cache_path(universe, years).write_text(json.dumps(payload, default=str), encoding="utf-8")
+        except OSError:
+            pass
+        return payload
+    except OSError:
+        cached = load_portfolios(universe, years)
+        if cached:
+            return cached
+        return _empty_portfolios(universe, years)

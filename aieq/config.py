@@ -5,7 +5,69 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CACHE_DIR = ROOT / ".cache"
+
+
+def _is_serverless() -> bool:
+    return bool(
+        os.getenv("VERCEL")
+        or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+        or os.getenv("LAMBDA_TASK_ROOT")
+    )
+
+
+def _configure_serverless_fs() -> None:
+    """Vercel/Lambda: /var/task is read-only. Point caches at /tmp."""
+    if not _is_serverless():
+        return
+    tmp = "/tmp"
+    os.environ.setdefault("TMPDIR", tmp)
+    os.environ.setdefault("XDG_CACHE_HOME", tmp)
+    os.environ.setdefault("XDG_DATA_HOME", tmp)
+    os.environ.setdefault("AIEQ_CACHE_DIR", f"{tmp}/aieq-cache")
+    home = os.getenv("HOME") or ""
+    if not home or home.startswith("/var/task") or not os.access(home, os.W_OK):
+        os.environ["HOME"] = tmp
+
+
+def _pick_cache_dir() -> Path:
+    override = (os.getenv("AIEQ_CACHE_DIR") or "").strip()
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    if _is_serverless():
+        candidates.append(Path("/tmp/aieq-cache"))
+    else:
+        candidates.append(ROOT / ".cache")
+        candidates.append(Path("/tmp/aieq-cache"))
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".write_test"
+            probe.write_bytes(b"ok")
+            probe.unlink(missing_ok=True)
+            return path
+        except OSError:
+            continue
+    return Path("/tmp/aieq-cache")
+
+
+_configure_serverless_fs()
+CACHE_DIR = _pick_cache_dir()
+
+
+def ensure_cache_dir() -> Path:
+    """Create the cache dir if possible; never raise (Vercel /var/task is read-only)."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return CACHE_DIR
+    except OSError:
+        fallback = Path("/tmp/aieq-cache")
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
+
 
 MEGA_LIQUID = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",

@@ -1,7 +1,7 @@
-"""Durable store: Postgres when DATABASE_URL is set, otherwise `.cache` files.
+"""Durable store: Postgres when DATABASE_URL is set, otherwise a writable cache dir.
 
-Use a hosted Postgres (Neon / Vercel Postgres / Supabase) so boards and tapes
-survive deploys. Local `python app.py` without a URL keeps using `.cache/`.
+On Vercel the app root is read-only, so files go to /tmp. Use hosted Postgres so
+boards and tapes survive cold starts.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from aieq.config import CACHE_DIR
+from aieq.config import ensure_cache_dir
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS desk_docs (
@@ -85,7 +85,7 @@ def _connect():
             return _pool
         except Exception as exc:
             _failed = True
-            print(f"Postgres unavailable ({exc}); using .cache files.")
+            print(f"Postgres unavailable ({exc}); using file cache.")
             return None
 
 
@@ -100,9 +100,9 @@ def backend_name() -> str:
 
 
 def _file(kind: str, key: str, *, blob: bool = False):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    root = ensure_cache_dir()
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in f"{kind}_{key}")
-    return CACHE_DIR / (f"{safe}.pkl" if blob else f"{safe}.json")
+    return root / (f"{safe}.pkl" if blob else f"{safe}.json")
 
 
 def put_doc(kind: str, key: str, payload: Any) -> None:
@@ -121,12 +121,11 @@ def put_doc(kind: str, key: str, payload: Any) -> None:
                 """,
                 (kind, key, Jsonb(body)),
             )
-    path = _file(kind, key)
     try:
+        path = _file(kind, key)
         path.write_text(json.dumps(body, default=str), encoding="utf-8")
-    except Exception:
-        if pool is None:
-            pass
+    except OSError:
+        pass
 
 
 def get_doc(kind: str, key: str) -> Any | None:

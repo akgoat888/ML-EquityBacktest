@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 import requests
 
-from aieq.config import CACHE_DIR, MEGA_LIQUID
+from aieq.config import CACHE_DIR, MEGA_LIQUID, ensure_cache_dir
 from aieq.yahoo import configure, gated, yf_ticker
 
 configure()
@@ -122,9 +122,8 @@ def _save_mcap_cache(payload: dict[str, Any]) -> None:
 
     put_doc("meta", "market_caps", payload)
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        (CACHE_DIR / "market_caps.json").write_text(json.dumps(payload), encoding="utf-8")
-    except Exception:
+        (ensure_cache_dir() / "market_caps.json").write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
         pass
 
 
@@ -229,9 +228,8 @@ def _cap_universe(name: str, lo: float, hi: float, candidates: list[str]) -> lis
     kept = sorted(t for t, cap in known.items() if lo <= cap < hi)
     put_doc("universe", name, {"tickers": kept})
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(kept), encoding="utf-8")
-    except Exception:
+        (ensure_cache_dir() / f"universe_{name}.json").write_text(json.dumps(kept), encoding="utf-8")
+    except OSError:
         pass
     return kept
 
