@@ -47,6 +47,7 @@ class ScanIn(BaseModel):
     max_workers: int = Field(default=8, ge=1, le=12)
     year: int | None = None
     month: int | None = None
+    cursor: int | None = Field(default=None, ge=0)
 
 
 @app.get("/health")
@@ -160,7 +161,12 @@ def board_status() -> dict[str, Any]:
 @app.post("/board/refresh")
 def board_refresh(body: ScanIn | None = None) -> dict[str, Any]:
     body = body or ScanIn()
-    return start_scan(universe=body.universe, deep=body.deep, max_workers=body.max_workers)
+    return start_scan(
+        universe=body.universe,
+        deep=body.deep,
+        max_workers=body.max_workers,
+        cursor=body.cursor,
+    )
 
 
 @app.get("/options/flags")

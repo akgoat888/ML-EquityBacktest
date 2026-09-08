@@ -14,6 +14,7 @@ const state = {
   boardAbort: null,
   scanHideTimer: null,
   scanDismissed: null,
+  scanCursor: {},
 };
 
 const UNIVERSE_IDS = ["mega", "global", "nasdaq100", "sp500", "midcap", "smallcap"];
@@ -291,6 +292,10 @@ async function api(path, opts = {}) {
     } catch (err) {
       if (err && err.name === "AbortError") throw err;
       lastErr = err;
+      const msg = String(err && err.message || "");
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        lastErr = new Error("Connection dropped (scan batch timed out). Retrying — names already scored stay on the board.");
+      }
     }
   }
   throw lastErr;
@@ -1183,21 +1188,26 @@ function startPoll() {
   if (state.poll) return;
   state.poll = setInterval(async () => {
     try {
-      const job = await api("/board/status");
+      const uni = $("universe").value;
+      const job = await api("/board/refresh", {
+        method: "POST",
+        body: scanBody(uni, state.scanCursor[uni] || 0),
+      });
+      rememberScanCursor(uni, job);
       updateScanStatus(job);
-      if (job.status === "running") {
-        await loadBoard({ quiet: true, fillEmpty: false });
-      } else {
-        clearInterval(state.poll);
-        state.poll = null;
-        await loadBoard();
-        if (job.status === "done") toast(`Board ready · ${job.n} names scored.`, "ok", 4500);
-        else if (job.status === "error") toast(job.error || "Scan failed.", "err");
-      }
+      await loadBoard({ quiet: true, fillEmpty: false });
+      if (job.status === "running") return;
+      clearInterval(state.poll);
+      state.poll = null;
+      await loadBoard({ fillEmpty: false });
+      if (job.status === "done") toast(`Board ready · ${job.n} names scored.`, "ok", 4500);
+      else if (job.status === "error") toast(job.error || "Scan failed.", "err");
     } catch (err) {
-      $("scan-status").textContent = err.message;
+      if (err && err.name === "AbortError") return;
+      await loadBoard({ quiet: true, fillEmpty: false }).catch(() => {});
+      if ($("scan-status")) $("scan-status").textContent = "Scan still running — retrying…";
     }
-  }, 1500);
+  }, 2000);
 }
 
 function barChart(canvas, labels, values) {
@@ -1450,17 +1460,34 @@ function renderDive(res) {
   }
 }
 
+function scanBody(uni, cursor) {
+  return JSON.stringify({
+    universe: uni,
+    deep: $("deep").checked,
+    cursor: Number(cursor) || 0,
+  });
+}
+
+function rememberScanCursor(uni, job) {
+  const next = job && (job.next_cursor ?? job.progress);
+  if (next == null) return;
+  state.scanCursor[uni] = Number(next) || 0;
+}
+
 async function refreshUniverse() {
   const uni = $("universe").value;
   localStorage.setItem("desk_universe", uni);
   setBusy("scan-btn", true);
+  state.scanCursor[uni] = 0;
   try {
     const job = await api("/board/refresh", {
       method: "POST",
-      body: JSON.stringify({ universe: uni, deep: $("deep").checked }),
+      body: scanBody(uni, 0),
     });
+    rememberScanCursor(uni, job);
     updateScanStatus(job);
     startPoll();
+    await loadBoard({ quiet: true, fillEmpty: false });
     const ym = tapeYM();
     const extra = { universe: uni, year: ym.year, month: ym.month };
     if (state.view === "options") {
@@ -1472,9 +1499,11 @@ async function refreshUniverse() {
       startVolumePoll();
     }
   } catch (err) {
-    $("scan-status").innerHTML = `<span class="err">${esc(err.message)}</span>`;
-    setBusy("scan-btn", false);
-    toast(err.message, "err");
+    if ($("scan-status")) {
+      $("scan-status").textContent = "Scan started — loading names in batches…";
+    }
+    startPoll();
+    await loadBoard({ quiet: true, fillEmpty: false }).catch(() => {});
   }
 }
 

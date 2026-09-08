@@ -316,6 +316,58 @@ def scan_universe(
     return out
 
 
+def score_board_batch(
+    tickers: list[str],
+    universe: str,
+    deep: bool = False,
+    max_workers: int = 3,
+) -> pd.DataFrame:
+    """Score a small batch and merge into the saved board for `universe`."""
+    settings = DEFAULT
+    tickers = list(dict.fromkeys(ALIASES.get(str(t).upper(), str(t)).upper() for t in tickers if t))
+    benches = fetch_benchmarks(settings)
+    geo = fetch_geo_news(settings)
+    fresh: list[dict[str, Any]] = []
+
+    def _one(sym: str) -> dict[str, Any] | None:
+        try:
+            res = analyze(
+                sym,
+                settings=settings,
+                deep=deep,
+                board=True,
+                skip_resolve=True,
+                shared_benches=benches,
+                shared_geo=geo,
+            )
+            return res.to_summary()
+        except Exception:
+            return None
+
+    workers = max(1, min(int(max_workers), len(tickers) or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for fut in as_completed([pool.submit(_one, t) for t in tickers]):
+            row = fut.result()
+            if row:
+                fresh.append(row)
+
+    prev, _, _ = load_board(universe)
+    by: dict[str, dict[str, Any]] = {}
+    if prev is not None and not prev.empty:
+        for rec in prev.to_dict(orient="records"):
+            key = str(rec.get("ticker") or "").upper()
+            if key:
+                by[key] = rec
+    for rec in fresh:
+        key = str(rec.get("ticker") or "").upper()
+        if key:
+            by[key] = rec
+    out = _sorted_board(list(by.values()))
+    if not out.empty:
+        save_board(out, universe=universe)
+    return out
+
+
 BOARD_PATH = CACHE_DIR / "universe_board.json"
 _board_lock = threading.Lock()
 _board_mem: dict[str, tuple[pd.DataFrame, str | None, str | None]] = {}
