@@ -9,38 +9,64 @@ import pandas as pd
 from aieq.config import Settings, DEFAULT
 
 
-def _make_xgb():
-    from xgboost import XGBClassifier, XGBRegressor
+def _xgb_train():
+    """Native booster API — XGBClassifier pulls sklearn, which is not on Vercel."""
+    from xgboost.core import DMatrix
+    from xgboost.training import train
 
-    common = dict(
-        n_estimators=350,
-        max_depth=3,
-        learning_rate=0.03,
-        subsample=0.80,
-        colsample_bytree=0.80,
-        min_child_weight=6,
-        reg_lambda=6.0,
-        reg_alpha=0.8,
-        n_jobs=1,
-        random_state=DEFAULT.random_state,
-        verbosity=0,
-    )
-    try:
-        clf = XGBClassifier(
-            **common,
-            objective="binary:logistic",
-            eval_metric="logloss",
-            tree_method="hist",
-        )
-        reg = XGBRegressor(
-            **{**common, "n_estimators": 300},
-            objective="reg:squarederror",
-            tree_method="hist",
-        )
-    except TypeError:
-        clf = XGBClassifier(**common, objective="binary:logistic")
-        reg = XGBRegressor(**{**common, "n_estimators": 300}, objective="reg:squarederror")
-    return clf, reg, "xgboost"
+    return DMatrix, train
+
+
+def _matrix(DMatrix, X, y=None):
+    names = list(X.columns) if hasattr(X, "columns") else None
+    data = np.asarray(X, dtype=np.float32)
+    if y is None:
+        return DMatrix(data, feature_names=names)
+    return DMatrix(data, label=np.asarray(y, dtype=np.float32), feature_names=names)
+
+
+def _fit_classifier(X, y):
+    DMatrix, train = _xgb_train()
+    params = {
+        "max_depth": 3,
+        "eta": 0.03,
+        "subsample": 0.80,
+        "colsample_bytree": 0.80,
+        "min_child_weight": 6,
+        "lambda": 6.0,
+        "alpha": 0.8,
+        "objective": "binary:logistic",
+        "eval_metric": "logloss",
+        "tree_method": "hist",
+        "nthread": 1,
+        "seed": DEFAULT.random_state,
+        "verbosity": 0,
+    }
+    return train(params, _matrix(DMatrix, X, y), num_boost_round=350)
+
+
+def _fit_regressor(X, y):
+    DMatrix, train = _xgb_train()
+    params = {
+        "max_depth": 3,
+        "eta": 0.03,
+        "subsample": 0.80,
+        "colsample_bytree": 0.80,
+        "min_child_weight": 6,
+        "lambda": 6.0,
+        "alpha": 0.8,
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "nthread": 1,
+        "seed": DEFAULT.random_state,
+        "verbosity": 0,
+    }
+    return train(params, _matrix(DMatrix, X, y), num_boost_round=300)
+
+
+def _predict(model, X) -> np.ndarray:
+    DMatrix, _ = _xgb_train()
+    return np.asarray(model.predict(_matrix(DMatrix, X)), dtype=float)
 
 
 @dataclass
@@ -76,7 +102,6 @@ def _roc_auc_score(y_true: np.ndarray, scores: np.ndarray) -> float:
     neg = s[y == 0]
     if len(pos) == 0 or len(neg) == 0:
         return float("nan")
-    # Mann–Whitney / Wilcoxon rank-sum, ties count as 0.5
     order = np.argsort(np.concatenate([neg, pos]), kind="mergesort")
     ranks = np.empty_like(order, dtype=float)
     ranks[order] = np.arange(1, len(order) + 1, dtype=float)
@@ -88,14 +113,25 @@ def _roc_auc_score(y_true: np.ndarray, scores: np.ndarray) -> float:
 
 
 def _importance_map(model: Any, names: list[str]) -> dict[str, float]:
-    imp = None
-    if hasattr(model, "feature_importances_"):
-        imp = np.asarray(model.feature_importances_, dtype=float)
-    if imp is None or len(imp) != len(names):
+    scores: dict[str, float] = {}
+    if model is None:
         return {}
-    total = float(imp.sum()) or 1.0
-    pairs = sorted(zip(names, (imp / total).tolist()), key=lambda x: x[1], reverse=True)
-    return dict(pairs[:20])
+    try:
+        raw = model.get_score(importance_type="gain")
+        for key, val in (raw or {}).items():
+            name = key
+            if isinstance(key, str) and key.startswith("f") and key[1:].isdigit():
+                idx = int(key[1:])
+                if 0 <= idx < len(names):
+                    name = names[idx]
+            scores[str(name)] = float(val)
+    except Exception:
+        return {}
+    if not scores:
+        return {}
+    total = float(sum(scores.values())) or 1.0
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return {k: v / total for k, v in ranked[:20]}
 
 
 def _safe_auc(y_true: np.ndarray, p: np.ndarray) -> float:
@@ -125,7 +161,6 @@ def walk_forward(
 
     oos_rows: list[pd.DataFrame] = []
     last_clf = None
-    last_reg = None
     backend = "xgboost"
     names = list(X.columns)
 
@@ -133,7 +168,6 @@ def walk_forward(
     while do_oos and start + 5 < n:
         train_end = start
         test_end = min(n, start + test)
-        # Purge last `embargo` train rows so labels don't overlap the test window.
         tr_end_eff = max(60, train_end - embargo)
         X_tr, y_tr, r_tr = X.iloc[:tr_end_eff], y_cls.iloc[:tr_end_eff], y_reg.iloc[:tr_end_eff]
         X_te = X.iloc[start:test_end]
@@ -145,21 +179,13 @@ def walk_forward(
             start = test_end
             continue
 
-        clf, reg, backend = _make_xgb()
-        clf.fit(X_tr, y_tr)
-        reg.fit(X_tr, r_tr)
-        last_clf, last_reg = clf, reg
-
-        if hasattr(clf, "predict_proba"):
-            p_up = clf.predict_proba(X_te)[:, 1]
-        else:
-            p_up = clf.predict(X_te).astype(float)
-        exp_ret = np.asarray(reg.predict(X_te), dtype=float)
-
+        clf = _fit_classifier(X_tr, y_tr)
+        reg = _fit_regressor(X_tr, r_tr)
+        last_clf = clf
         fold = pd.DataFrame(
             {
-                "p_up": p_up,
-                "exp_ret": exp_ret,
+                "p_up": _predict(clf, X_te),
+                "exp_ret": _predict(reg, X_te),
                 "y": y_te.to_numpy(),
                 "fwd_ret": r_te.to_numpy(),
             },
@@ -188,23 +214,17 @@ def walk_forward(
             metrics["oos_ic"] = 0.0
         metrics["n_oos"] = float(len(oos))
 
-    # Live model: train on all labeled rows (features through T, labels known through T-horizon).
     live_p, live_r = 0.5, 0.0
     live_model = None
     if len(X) >= 150 and y_cls.nunique() >= 2:
-        clf, reg, backend = _make_xgb()
-        clf.fit(X, y_cls)
-        reg.fit(X, y_reg)
+        clf = _fit_classifier(X, y_cls)
+        reg = _fit_regressor(X, y_reg)
         live_model = clf
         last_clf = clf
-        last_reg = reg
         row = live_row if live_row is not None else X.iloc[[-1]]
         row = row.reindex(columns=names).fillna(0.0)
-        if hasattr(clf, "predict_proba"):
-            live_p = float(clf.predict_proba(row)[0, 1])
-        else:
-            live_p = float(clf.predict(row)[0])
-        live_r = float(reg.predict(row)[0])
+        live_p = float(_predict(clf, row)[0])
+        live_r = float(_predict(reg, row)[0])
 
     importance = _importance_map(last_clf, names) if last_clf is not None else {}
 
