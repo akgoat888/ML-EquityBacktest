@@ -154,7 +154,10 @@ def analyze(
     if board and not deep:
         wf = _rules_model(feat, backend="board_scan")
     elif len(X) > 180:
-        wf = walk_forward(X, y_cls, y_reg, settings, live_row=live_row, do_oos=deep)
+        try:
+            wf = walk_forward(X, y_cls, y_reg, settings, live_row=live_row, do_oos=deep)
+        except Exception:
+            wf = _rules_model(feat, backend="rules_fallback")
     else:
         wf = _rules_model(feat)
 

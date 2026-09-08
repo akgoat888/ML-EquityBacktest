@@ -10,59 +10,37 @@ from aieq.config import Settings, DEFAULT
 
 
 def _make_xgb():
-    try:
-        from xgboost import XGBClassifier, XGBRegressor
+    from xgboost import XGBClassifier, XGBRegressor
 
+    common = dict(
+        n_estimators=350,
+        max_depth=3,
+        learning_rate=0.03,
+        subsample=0.80,
+        colsample_bytree=0.80,
+        min_child_weight=6,
+        reg_lambda=6.0,
+        reg_alpha=0.8,
+        n_jobs=1,
+        random_state=DEFAULT.random_state,
+        verbosity=0,
+    )
+    try:
         clf = XGBClassifier(
-            n_estimators=350,
-            max_depth=3,
-            learning_rate=0.03,
-            subsample=0.80,
-            colsample_bytree=0.80,
-            min_child_weight=6,
-            reg_lambda=6.0,
-            reg_alpha=0.8,
+            **common,
             objective="binary:logistic",
             eval_metric="logloss",
             tree_method="hist",
-            n_jobs=1,
-            random_state=DEFAULT.random_state,
-            verbosity=0,
         )
         reg = XGBRegressor(
-            n_estimators=300,
-            max_depth=3,
-            learning_rate=0.03,
-            subsample=0.80,
-            colsample_bytree=0.80,
-            min_child_weight=6,
-            reg_lambda=6.0,
-            reg_alpha=0.8,
+            **{**common, "n_estimators": 300},
             objective="reg:squarederror",
             tree_method="hist",
-            n_jobs=1,
-            random_state=DEFAULT.random_state,
-            verbosity=0,
         )
-        return clf, reg, "xgboost"
-    except Exception:
-        from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor  # type: ignore
-
-        clf = GradientBoostingClassifier(
-            n_estimators=180,
-            max_depth=3,
-            learning_rate=0.05,
-            subsample=0.8,
-            random_state=DEFAULT.random_state,
-        )
-        reg = GradientBoostingRegressor(
-            n_estimators=160,
-            max_depth=3,
-            learning_rate=0.05,
-            subsample=0.8,
-            random_state=DEFAULT.random_state,
-        )
-        return clf, reg, "sklearn_gbm"
+    except TypeError:
+        clf = XGBClassifier(**common, objective="binary:logistic")
+        reg = XGBRegressor(**{**common, "n_estimators": 300}, objective="reg:squarederror")
+    return clf, reg, "xgboost"
 
 
 @dataclass
