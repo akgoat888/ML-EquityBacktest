@@ -1122,11 +1122,6 @@ function paintBoard(data, uni, { quiet = false, fillEmpty = true } = {}) {
   else if (fillEmpty && !state.rows.length) {
     const busy = $("scan-btn") && $("scan-btn").classList.contains("is-busy");
     if (!busy) refreshUniverse();
-  } else if (fillEmpty && data.stale && state.view === "home" && !state.autoScan) {
-    state.autoScan = true;
-    const through = data.session || data.as_of || "an earlier session";
-    toast(`Board still shows ${through}. Pulling the ${data.last_session} close…`, "info", 7000);
-    refreshUniverse();
   }
 }
 

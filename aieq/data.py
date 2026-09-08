@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,9 +17,29 @@ configure()
 
 _US_EASTERN = ZoneInfo("America/New_York")
 
+# Full-day NYSE closures. last_completed_session() only skipped weekends, so
+# Labor Day 2026-09-07 looked like a session and every board looked "behind".
+_NYSE_HOLIDAYS = frozenset(
+    {
+        date(2025, 1, 1), date(2025, 1, 20), date(2025, 2, 17), date(2025, 4, 18),
+        date(2025, 5, 26), date(2025, 6, 19), date(2025, 7, 4), date(2025, 9, 1),
+        date(2025, 11, 27), date(2025, 12, 25),
+        date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
+        date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
+        date(2026, 11, 26), date(2026, 12, 25),
+        date(2027, 1, 1), date(2027, 1, 18), date(2027, 2, 15), date(2027, 3, 26),
+        date(2027, 5, 31), date(2027, 6, 18), date(2027, 7, 5), date(2027, 9, 6),
+        date(2027, 11, 25), date(2027, 12, 24),
+    }
+)
+
+
+def _is_closed_session(day: date) -> bool:
+    return day.weekday() >= 5 or day in _NYSE_HOLIDAYS
+
 
 def last_completed_session(now: datetime | None = None) -> pd.Timestamp:
-    """Most recent finished US regular session (16:05 ET), skipping weekends."""
+    """Most recent finished US regular session (16:05 ET), skipping weekends and NYSE holidays."""
     now = now or datetime.now(_US_EASTERN)
     if now.tzinfo is None:
         now = now.replace(tzinfo=_US_EASTERN)
@@ -27,16 +47,10 @@ def last_completed_session(now: datetime | None = None) -> pd.Timestamp:
         now = now.astimezone(_US_EASTERN)
     closed = now.hour > 16 or (now.hour == 16 and now.minute >= 5)
     day = now.date()
-    if now.weekday() >= 5 or not closed:
-        if now.weekday() == 5:
-            delta = 1
-        elif now.weekday() == 6:
-            delta = 2
-        else:
-            delta = 1
-        day = (pd.Timestamp(day) - pd.Timedelta(days=delta)).date()
-    while pd.Timestamp(day).weekday() >= 5:
-        day = (pd.Timestamp(day) - pd.Timedelta(days=1)).date()
+    if _is_closed_session(day) or not closed:
+        day = day - timedelta(days=1)
+    while _is_closed_session(day):
+        day = day - timedelta(days=1)
     return pd.Timestamp(day)
 
 
