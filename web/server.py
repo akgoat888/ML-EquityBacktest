@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 API_URL = os.getenv("API_URL", "").strip().rstrip("/")
 if not API_URL:
     API_URL = "/api" if os.getenv("VERCEL") else "http://127.0.0.1:8000"
-ASSET_V = "20260908a"
+ASSET_V = "20260908b"
 
 app = Flask(
     __name__,

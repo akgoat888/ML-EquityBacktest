@@ -12,6 +12,8 @@ const state = {
   volSort: { key: "notional", dir: "desc" },
   boardCache: {},
   boardAbort: null,
+  scanHideTimer: null,
+  scanDismissed: null,
 };
 
 const UNIVERSE_IDS = ["mega", "global", "nasdaq100", "sp500", "midcap", "smallcap"];
@@ -1137,6 +1139,11 @@ function updateScanStatus(job) {
     return;
   }
   if (job.status === "running") {
+    state.scanDismissed = null;
+    if (state.scanHideTimer) {
+      clearTimeout(state.scanHideTimer);
+      state.scanHideTimer = null;
+    }
     wrap.hidden = false;
     const pctDone = job.total ? Math.round((job.progress / job.total) * 100) : 0;
     bar.style.width = pctDone + "%";
@@ -1145,15 +1152,30 @@ function updateScanStatus(job) {
     return;
   }
   setBusy("scan-btn", false);
-  wrap.hidden = job.status !== "done";
+  if (job.status === "error") {
+    el.innerHTML = `<span class="err">${esc(job.error)}</span>`;
+    wrap.hidden = true;
+    return;
+  }
   if (job.status === "done") {
+    const id = `${job.universe || ""}|${job.as_of || ""}|${job.n || 0}`;
+    if (state.scanDismissed === id) {
+      el.textContent = "";
+      wrap.hidden = true;
+      return;
+    }
     bar.style.width = "100%";
+    wrap.hidden = false;
     el.textContent = job.universe && job.universe !== selectedUni
       ? `Last finished: ${UNIVERSE_LABEL[job.universe] || job.universe}. Select that universe to view it.`
       : `Done · ${job.n} names · ${job.as_of || ""}`;
-  } else if (job.status === "error") {
-    el.innerHTML = `<span class="err">${esc(job.error)}</span>`;
-    wrap.hidden = true;
+    if (state.scanHideTimer) clearTimeout(state.scanHideTimer);
+    state.scanHideTimer = setTimeout(() => {
+      el.textContent = "";
+      wrap.hidden = true;
+      state.scanDismissed = id;
+      state.scanHideTimer = null;
+    }, 2800);
   }
 }
 
