@@ -40,14 +40,18 @@
 [hidden] { display: none !important; }
 html { scroll-behavior: smooth; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); }
+html { overflow-x: hidden; }
 body {
   max-width: 1320px; margin: 0 auto; padding: 0 1.25rem 4rem;
+  padding-left: max(1.25rem, env(safe-area-inset-left));
+  padding-right: max(1.25rem, env(safe-area-inset-right));
   background:
     radial-gradient(900px 420px at 8% -12%, rgba(61, 220, 151, .10), transparent 62%),
     radial-gradient(820px 400px at 96% -8%, rgba(108, 182, 255, .10), transparent 62%),
     var(--bg);
   background-repeat: no-repeat;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: rgba(108, 182, 255, .18);
 }
 h1, h2, h3 { color: var(--text-strong); }
 a { color: var(--link); }
@@ -114,6 +118,7 @@ a { color: var(--link); }
   bottom: -.66rem; width: 18px; height: 2px; border-radius: 2px;
   background: linear-gradient(90deg, var(--link), var(--high));
 }
+.mobile-nav { display: none; }
 
 /* 4. Controls ----------------------------------------------------------- */
 button, input, select { font: inherit; }
@@ -133,6 +138,7 @@ button {
   cursor: pointer; color: var(--text); background: var(--panel-3);
   border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: .46rem .8rem; font-weight: 600; text-transform: none; letter-spacing: 0;
+  touch-action: manipulation;
   transition: transform .12s var(--ease), background .15s var(--ease),
     border-color .15s var(--ease), color .15s var(--ease), box-shadow .15s var(--ease);
 }
@@ -648,6 +654,12 @@ kbd {
 }
 
 /* 12. Responsive ------------------------------------------------------- */
+@media (hover: none) {
+  .kpi:hover, .name-card:hover, .tier-pill:hover, .hold-tile:hover { transform: none; }
+  .kpi-click::after { display: none; }
+  .tip { width: min(16.5rem, calc(100vw - 2.5rem)); }
+}
+
 @media (max-width: 1100px) {
   .dive-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .port-summary { grid-template-columns: repeat(2, 1fr); }
@@ -656,12 +668,122 @@ kbd {
   .kpis, .dive-kpis, .grid2, .board-grid, .kpis-mini, .port-summary { grid-template-columns: 1fr; }
   .port-stats { grid-template-columns: repeat(2, 1fr); }
   .hold-grid { grid-template-columns: repeat(2, 1fr); }
-  body { padding: 0 .85rem 3rem; }
-  .top { position: static; backdrop-filter: none; }
+  body { padding: 0 .85rem 3rem; padding-left: max(.85rem, env(safe-area-inset-left)); padding-right: max(.85rem, env(safe-area-inset-right)); }
   .nav a.active::after { display: none; }
   .ac-menu { min-width: 0; width: 100%; max-width: none; }
   .chart-box, .dive-charts .chart-box { height: 240px; }
+  .dive-verdict { text-align: left; }
 }
+
+@media (max-width: 720px) {
+  body {
+    padding: 0 .7rem calc(4.6rem + env(safe-area-inset-bottom));
+    padding-left: max(.7rem, env(safe-area-inset-left));
+    padding-right: max(.7rem, env(safe-area-inset-right));
+  }
+  .top {
+    flex-wrap: nowrap;
+    gap: .55rem;
+    padding: .55rem 0 .5rem;
+    margin-bottom: .65rem;
+  }
+  .home-btn, #main-nav, #shortcut-btn { display: none; }
+  .brand { font-size: 1.05rem; }
+  #page-sub { font-size: .7rem; line-height: 1.35; }
+
+  input, select, button:not(.icon-btn) {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  input, select { min-width: 0; width: 100%; }
+  #ticker { min-width: 0; width: 100%; }
+  label { width: 100%; }
+
+  .toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .65rem;
+    padding: .7rem .75rem;
+  }
+  .toolbar .field-ac,
+  .toolbar #analyze-btn,
+  .toolbar .live-quote,
+  .toolbar .toolbar-hint,
+  .toolbar .scan-meta,
+  .toolbar .check,
+  .toolbar #scan-btn,
+  .filters .toolbar-grow,
+  .filters #f-all,
+  .filters #opt-all,
+  .filters #options-load,
+  .fin-toolbar #fin-load,
+  #volume-load {
+    grid-column: 1 / -1;
+  }
+  .toolbar-sep { display: none; }
+  .range-row { width: 100%; }
+  .range-row input[type="range"] { flex: 1; min-width: 0; min-height: 0; }
+
+  .seg { flex-wrap: wrap; width: 100%; }
+  .seg button { flex: 1 1 auto; min-height: 40px; }
+
+  .live-quote { min-width: 0; width: 100%; justify-content: center; }
+  .hero h1, .dive-hero h1 { font-size: 1.45rem; }
+  .dive-hero { padding: .85rem .8rem; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dive-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi .val { font-size: 1.05rem; }
+  .board-grid { grid-template-columns: 1fr; }
+  .name-card { min-width: 0; }
+  .chart-box, .dive-charts .chart-box, .dive-equity, .port-chart { height: 210px; }
+  .table-scroll, .stmt-wrap { -webkit-overflow-scrolling: touch; }
+  .drivers { font-size: .8rem; }
+  .port-head { flex-direction: column; align-items: stretch; }
+  .port-controls { width: 100%; }
+  .port-pick, .port-pick select { min-width: 0; width: 100%; }
+  .port-title { font-size: 1.2rem; }
+  .port-card .growth { font-size: 1.55rem; }
+  .port-stats { grid-template-columns: 1fr 1fr; }
+  .hold-grid { grid-template-columns: 1fr 1fr; }
+  .toasts {
+    left: .7rem; right: .7rem; bottom: calc(4.2rem + env(safe-area-inset-bottom));
+    max-width: none;
+  }
+  .sheet {
+    width: 100%;
+    max-height: min(88vh, 100%);
+    overflow: auto;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    align-self: end;
+    padding-bottom: max(1.1rem, env(safe-area-inset-bottom));
+  }
+  .sheet-backdrop { place-items: end center; }
+
+  .mobile-nav {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 50;
+    gap: 0;
+    padding: .2rem .15rem calc(.25rem + env(safe-area-inset-bottom));
+    background: rgba(9, 12, 17, .94);
+    backdrop-filter: blur(14px);
+    border-top: 1px solid var(--line);
+  }
+  .mobile-nav a {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 44px; padding: .35rem .15rem;
+    color: var(--muted); text-decoration: none;
+    font-size: .68rem; font-weight: 700; letter-spacing: .01em;
+    text-align: center; border-radius: var(--r-xs);
+  }
+  .mobile-nav a.active {
+    color: var(--text-strong);
+    background: rgba(108, 182, 255, .12);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

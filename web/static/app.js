@@ -384,7 +384,7 @@ const VIEW_META = {
 };
 
 function setNav(name) {
-  document.querySelectorAll("#main-nav a").forEach((a) => {
+  document.querySelectorAll("#main-nav a, #mobile-nav a").forEach((a) => {
     a.classList.toggle("active", a.dataset.view === name);
   });
 }
@@ -2206,10 +2206,11 @@ function bindUi() {
     e.preventDefault();
     showHome(true);
   });
-  document.querySelectorAll("#main-nav a").forEach((a) => {
+  document.querySelectorAll("#main-nav a, #mobile-nav a").forEach((a) => {
     a.addEventListener("click", (e) => {
       e.preventDefault();
-      gotoView(a.dataset.view);
+      if (a.dataset.view === "home") showHome(true);
+      else gotoView(a.dataset.view);
     });
   });
   $("analyze-form").addEventListener("submit", (e) => {
