@@ -1362,7 +1362,14 @@ function renderDive(res) {
   const sharpe = (res.backtest || {}).sharpe;
   const sharpeTone = signedTone(sharpe, 0, 0);
   const bt = res.backtest || {};
-  const pUp = (res.model || {}).live_p_up;
+  const model = res.model || {};
+  const pUp = model.live_p_up;
+  const metaP = model.meta_p;
+  const oosAuc = model.oos_auc;
+  const bits = [];
+  if (metaP != null && Number.isFinite(Number(metaP))) bits.push(`meta ${pct(metaP)}`);
+  if (oosAuc != null && Number.isFinite(Number(oosAuc))) bits.push(`AUC ${Number(oosAuc).toFixed(2)}`);
+  const pSub = bits.join(" · ") || "5-day up";
   const blurb = companyDescription(res);
   const sector = sectorLine(res);
   const blurbHtml = blurb ? `<div class="company-blurb">${blurb}</div>` : "";
@@ -1400,7 +1407,7 @@ function renderDive(res) {
       <div class="kpi">
         <div class="lbl">P(up)</div>
         <div class="val">${pct(pUp)}</div>
-        ${kpiMeter(pUp)}
+        <div class="kpi-sub">${pSub}</div>
       </div>
       <div class="kpi ${sharpeTone}">
         <div class="lbl">OOS Sharpe</div>
@@ -1420,7 +1427,7 @@ function renderDive(res) {
     </div>
     ${res.equity && res.equity.length
       ? `<div class="chart-box dive-equity">
-          <div class="chart-title"><span>Walk-forward equity</span><span class="hint-inline">Long when P(up) ≥ 55%, flat otherwise · dashed = buy &amp; hold</span></div>
+          <div class="chart-title"><span>Walk-forward equity</span><span class="hint-inline">Long when calibrated P(up) ≥ 55% · weak calls shrunk when the meta-label disagrees · dashed = buy &amp; hold</span></div>
           <div class="chart-canvas"><canvas id="eq-chart"></canvas></div>
         </div>`
       : '<p class="hint">Not enough history for a walk-forward equity curve.</p>'}

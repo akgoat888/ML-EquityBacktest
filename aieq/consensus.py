@@ -184,17 +184,29 @@ def mean_reversion_agent(feat: pd.DataFrame) -> AgentVote:
     return AgentVote("MeanReversion", score, conf, f"Bollinger %B {pct_b:.2f}, RSI {rsi14:.1f} (faded when ADX high).")
 
 
-def ml_agent(p_up: float, exp_ret: float, oos_sharpe: float, backend: str) -> AgentVote:
+def ml_agent(
+    p_up: float,
+    exp_ret: float,
+    oos_sharpe: float,
+    backend: str,
+    meta_p: float | None = None,
+    oos_auc: float | None = None,
+) -> AgentVote:
     score = _clip((p_up - 0.5) * 2.4 + np.tanh(exp_ret * 12) * 0.25)
-    # Confidence tracks both probability extremity and OOS edge.
+    # Confidence tracks probability extremity, OOS Sharpe, calibration skill, and whether
+    # the meta-label thinks this direction call is one the model usually gets right.
     edge = float(np.clip((oos_sharpe + 0.3) / 1.8, 0.15, 1.0))
-    conf = float(np.clip(0.35 + abs(p_up - 0.5) * 1.4, 0.2, 0.95) * edge)
-    return AgentVote(
-        "XGBoost",
-        score,
-        conf,
-        f"{backend} P(up 5d)={p_up:.1%}, E[ret]={exp_ret:+.2%}, long-only OOS Sharpe {oos_sharpe:.2f}.",
-    )
+    skill = 1.0
+    detail = [f"{backend} calibrated P(up)={p_up:.1%}", f"E[ret]={exp_ret:+.2%}"]
+    if meta_p is not None and meta_p == meta_p:
+        skill *= float(np.clip((meta_p - 0.42) / 0.33, 0.35, 1.05))
+        detail.append(f"meta P(correct)={meta_p:.0%}")
+    if oos_auc is not None and oos_auc == oos_auc:
+        skill *= float(np.clip((oos_auc - 0.48) / 0.14, 0.45, 1.08))
+        detail.append(f"OOS AUC {oos_auc:.2f}")
+    detail.append(f"long-only OOS Sharpe {oos_sharpe:.2f}")
+    conf = float(np.clip((0.35 + abs(p_up - 0.5) * 1.4) * edge * skill, 0.12, 0.95))
+    return AgentVote("XGBoost", score, conf, ", ".join(detail) + ".")
 
 
 def options_agent(chain: dict[str, Any]) -> AgentVote:
@@ -491,6 +503,7 @@ def aggregate(
     votes: list[AgentVote],
     oos_sharpe: float,
     adx: float,
+    oos_auc: float | None = None,
 ) -> Consensus:
     weights = {
         "XGBoost": 0.26,
@@ -511,6 +524,11 @@ def aggregate(
         ml_w *= 0.7
     elif oos_sharpe > 1.0:
         ml_w *= 1.15
+    if oos_auc is not None and oos_auc == oos_auc:
+        if oos_auc < 0.52:
+            ml_w *= 0.55
+        elif oos_auc >= 0.60:
+            ml_w *= 1.08
     weights["XGBoost"] = ml_w
     if adx >= 25:
         weights["Trend"] *= 1.25
@@ -555,6 +573,8 @@ def aggregate(
             f" Conflict: XGBoost leans the other way (score {ml.score:+.2f}); "
             f"OOS Sharpe {oos_sharpe:.2f} so its vote weight is {weights['XGBoost']:.2f}."
         )
+    if oos_auc is not None and oos_auc == oos_auc:
+        thesis += f" Walk-forward AUC {oos_auc:.2f} (0.50 is a coin flip)."
     return Consensus(
         rating=rating,
         score=score,

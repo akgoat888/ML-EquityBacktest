@@ -113,6 +113,14 @@ def _rules_model(feat: pd.DataFrame, backend: str = "rules_only"):
     )
 
 
+def _finite_metric(val: Any) -> float | None:
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
 def analyze(
     ticker: str,
     settings: Settings | None = None,
@@ -181,11 +189,13 @@ def analyze(
         geo_news = shared_geo if shared_geo is not None else fetch_geo_news(settings)
         chain = fetch_options_chain(ticker, settings)
 
+    oos_auc = _finite_metric(wf.metrics.get("oos_auc"))
+    meta_p = _finite_metric(wf.metrics.get("meta_p"))
     votes: list[AgentVote] = [
         trend_agent(feat),
         momentum_agent(feat),
         mean_reversion_agent(feat),
-        ml_agent(wf.live_p_up, wf.live_expected_ret, oos_sharpe, wf.backend),
+        ml_agent(wf.live_p_up, wf.live_expected_ret, oos_sharpe, wf.backend, meta_p=meta_p, oos_auc=oos_auc),
         options_agent(chain),
         sentiment_agent(news, fundamentals),
         geopolitics_agent(geo_news, news, fundamentals),
@@ -193,7 +203,7 @@ def analyze(
         fundamental_agent(fundamentals, feat),
     ]
     adx = float(feat["adx"].iloc[-1]) if "adx" in feat.columns and pd.notna(feat["adx"].iloc[-1]) else 15.0
-    consensus = aggregate(votes, oos_sharpe, adx)
+    consensus = aggregate(votes, oos_sharpe, adx, oos_auc=oos_auc)
     atr_pct = float(feat["atr_pct"].iloc[-1]) if "atr_pct" in feat.columns and pd.notna(feat["atr_pct"].iloc[-1]) else 0.02
     opt_side = "CALL" if consensus.score >= 0 else "PUT"
     ideas = suggest_options(chain, opt_side, wf.live_expected_ret, atr_pct, consensus.confidence)

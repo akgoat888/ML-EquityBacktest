@@ -43,10 +43,14 @@ def render(res) -> str:
     lines.append(f"  {c.thesis}")
     lines.append("")
     lines.append(f"  XGBoost P(up {DEFAULT.horizon}d)  {m.get('live_p_up', 0):.1%}    E[return] {m.get('live_expected_ret', 0):+.2%}")
+    if m.get("meta_p") is not None and m.get("meta_p") == m.get("meta_p"):
+        lines.append(f"  Meta P(call correct) {float(m.get('meta_p')):.0%}")
     if m.get("oos_auc") is not None:
+        brier = m.get("oos_brier_cal", m.get("oos_brier"))
+        brier_txt = f"   Brier {float(brier):.3f}" if isinstance(brier, (int, float)) and brier == brier else ""
         lines.append(
             f"  OOS acc {m.get('oos_accuracy', float('nan')):.1%}   AUC {m.get('oos_auc', float('nan')):.3f}   "
-            f"IC {m.get('oos_ic', float('nan')):.3f}   n={int(m.get('n_oos') or 0)}"
+            f"IC {m.get('oos_ic', float('nan')):.3f}   n={int(m.get('n_oos') or 0)}{brier_txt}"
         )
     lines.append("")
     lines.append("  AGENT SCOREBOARD")
