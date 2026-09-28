@@ -227,7 +227,7 @@
     <div class="port-head">
       <div>
         <h2 class="port-title">Model portfolios</h2>
-        <p class="hint" id="port-status">Pick a horizon. Each horizon gets four sleeves — High, Medium, Low and Extremely low risk — with expected return, a 1σ range and a confidence score.</p>
+        <p class="hint" id="port-status">Pick a horizon. Sleeves with expected return above the S&amp;P 500’s 11.5%/yr are flagged as outrunning the index. Each card lists the full stock allocation.</p>
       </div>
       <div class="port-controls">
         <label class="port-pick">Universe
@@ -249,6 +249,7 @@
         <button type="button" class="primary" id="port-load">Refresh</button>
       </div>
     </div>
+    <div id="port-vs-spy" class="port-vs-spy" hidden></div>
     <div id="port-empty" class="empty">Open Portfolios and pick a horizon. Sleeves are built from the current universe board plus fundamentals and long-run history.</div>
     <div id="port-summary" class="port-summary"></div>
     <div id="port-chart-wrap" class="chart-box port-chart" hidden>

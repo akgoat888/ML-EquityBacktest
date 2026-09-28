@@ -1974,6 +1974,50 @@ function setPortYears(y) {
   });
 }
 
+function holdingsAllocation(s) {
+  const rows = s.holdings || [];
+  if (s.allocation) return s.allocation;
+  const parts = allocationPercents(rows.map((h) => Number(h.weight) || 0));
+  return rows.map((h, i) => `${h.ticker} ${parts[i]}%`).join(", ");
+}
+
+function allocationPercents(weights) {
+  const raw = weights.map((w) => Math.max(0, Number(w) || 0) * 100);
+  const tot = raw.reduce((a, b) => a + b, 0) || 1;
+  const scaled = raw.map((x) => x * 100 / tot);
+  const floors = scaled.map((x) => Math.floor(x));
+  let left = 100 - floors.reduce((a, b) => a + b, 0);
+  const order = scaled.map((x, i) => i).sort((a, b) => (scaled[b] - floors[b]) - (scaled[a] - floors[a]));
+  const out = floors.slice();
+  for (const i of order) {
+    if (left <= 0) break;
+    out[i] += 1;
+    left -= 1;
+  }
+  return out;
+}
+
+function spyAnn(data) {
+  const v = Number(data && data.spy_ann);
+  return Number.isFinite(v) && v > 0 ? v : 0.115;
+}
+
+function sleeveBeatsSpy(s, hurdle) {
+  if (typeof s.beats_spy === "boolean") return s.beats_spy;
+  return Number(s.exp_ann || 0) > hurdle;
+}
+
+function sleeveEdge(s, hurdle) {
+  if (s.edge_vs_spy != null && Number.isFinite(Number(s.edge_vs_spy))) return Number(s.edge_vs_spy);
+  return Number(s.exp_ann || 0) - hurdle;
+}
+
+function holdingWeightLabel(h, pctInt) {
+  if (h.weight_pct != null && Number.isFinite(Number(h.weight_pct))) return `${Number(h.weight_pct)}%`;
+  if (pctInt != null) return `${pctInt}%`;
+  return pct(h.weight);
+}
+
 function signedPct(n, d = 0) {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
   const v = Number(n) * 100;
@@ -1995,8 +2039,9 @@ function bandRail(s) {
   </div>`;
 }
 
-function portfolioChart(canvas, sleeves, years) {
+function portfolioChart(canvas, sleeves, years, hurdle) {
   const labels = Array.from({ length: years + 1 }, (_, i) => (i === 0 ? "Now" : `Y${i}`));
+  const spy = Number(hurdle) || 0.115;
   const datasets = sleeves.filter((s) => (s.path || []).length).map((s) => ({
     label: s.label,
     data: s.path.map((p) => p.expected),
@@ -2007,6 +2052,17 @@ function portfolioChart(canvas, sleeves, years) {
     borderWidth: 2,
     fill: false,
   }));
+  datasets.push({
+    label: "S&P 500 11.5%/yr",
+    data: labels.map((_, i) => Math.round(10000 * (1 + spy) ** i)),
+    borderColor: "#8b97a8",
+    backgroundColor: "#8b97a8",
+    tension: 0.15,
+    pointRadius: 0,
+    borderWidth: 1.5,
+    borderDash: [5, 4],
+    fill: false,
+  });
   const chart = new Chart(canvas, {
     type: "line",
     data: { labels, datasets },
@@ -2046,11 +2102,13 @@ function renderSwitches(s, years) {
 }
 
 function renderHoldings(s, years) {
-  return (s.holdings || []).map((h) => `
+  const rows = s.holdings || [];
+  const parts = allocationPercents(rows.map((h) => Number(h.weight) || 0));
+  return rows.map((h, i) => `
     <a class="hold-tile" href="${tickerUrl(h.ticker)}" data-open="${h.ticker}" style="--tier:${s.color}">
       <div class="hold-top">
         <span class="sym">${h.ticker}</span>
-        <span class="hold-wt">${pct(h.weight)}</span>
+        <span class="hold-wt">${holdingWeightLabel(h, parts[i])}</span>
       </div>
       <div class="hold-name hint">${(h.name || "").slice(0, 28)}</div>
       <div class="hold-metrics">
@@ -2071,20 +2129,44 @@ function renderPortfolios(data) {
   const el = $("port-list");
   const sleeves = data.sleeves || [];
   const years = Number(data.years || 1);
+  const hurdle = spyAnn(data);
+  const vs = $("port-vs-spy");
   if (!sleeves.length) {
     $("port-empty").hidden = false;
     $("port-summary").innerHTML = "";
     $("port-chart-wrap").hidden = true;
+    if (vs) { vs.hidden = true; vs.innerHTML = ""; }
     el.innerHTML = "";
     return;
   }
   $("port-empty").hidden = true;
-  $("port-summary").innerHTML = sleeves.map((s) => `
-    <div class="tier-pill" style="--tier:${s.color}" data-jump="port-${s.id}">
-      <div class="lbl">${s.label}</div>
+  const beaters = sleeves.filter((s) => sleeveBeatsSpy(s, hurdle));
+  if (vs) {
+    vs.hidden = false;
+    if (beaters.length) {
+      const bits = beaters.map((s) => {
+        const edge = sleeveEdge(s, hurdle);
+        return `<b>${s.label}</b> (${signedPct(s.exp_ann, 1)}/yr, ${signedPct(edge, 1)} vs S&amp;P)`;
+      }).join(", ");
+      vs.innerHTML = `<span class="port-vs-kicker">Expected to outrun the S&amp;P 500</span>
+        <p>S&amp;P 500 hurdle is <b>11.5%/yr</b> annualized. Model sleeves above that: ${bits}.</p>`;
+      vs.classList.remove("lags");
+    } else {
+      vs.innerHTML = `<span class="port-vs-kicker lags">None modeled above the S&amp;P 500</span>
+        <p>Every sleeve’s expected annualized return is at or below the S&amp;P’s <b>11.5%/yr</b> long-run hurdle on this universe and horizon.</p>`;
+      vs.classList.add("lags");
+    }
+  }
+  $("port-summary").innerHTML = sleeves.map((s) => {
+    const edge = sleeveEdge(s, hurdle);
+    const beats = sleeveBeatsSpy(s, hurdle);
+    return `
+    <div class="tier-pill${beats ? " beats-spy" : ""}" style="--tier:${s.color}" data-jump="port-${s.id}">
+      <div class="lbl">${s.label}${beats ? " · vs S&P" : ""}</div>
       <div class="val">${signedPct(s.exp_total)}</div>
-      <div class="sub2">${signedPct(s.exp_ann, 1)}/yr · conf ${pct(s.confidence)} · ${s.n} names</div>
-    </div>`).join("");
+      <div class="sub2">${signedPct(s.exp_ann, 1)}/yr · ${beats ? signedPct(edge, 1) + " vs S&P" : "trails S&P"} · ${s.n} names</div>
+    </div>`;
+  }).join("");
   $("port-summary").querySelectorAll("[data-jump]").forEach((p) => {
     p.addEventListener("click", () => {
       const target = document.getElementById(p.dataset.jump);
@@ -2092,39 +2174,47 @@ function renderPortfolios(data) {
     });
   });
   $("port-chart-wrap").hidden = false;
-  $("port-chart-sub").textContent = `${years}-year horizon · ${data.universe || ""} · ${data.as_of || ""}`;
+  $("port-chart-sub").textContent = `${years}-year horizon vs S&P 500 11.5%/yr · ${data.universe || ""} · ${data.as_of || ""}`;
   const canvas = $("port-chart");
   const wrap = canvas.parentElement;
   const fresh = document.createElement("canvas");
   fresh.id = "port-chart";
   wrap.replaceChild(fresh, canvas);
-  portfolioChart(fresh, sleeves, years);
+  portfolioChart(fresh, sleeves, years, hurdle);
 
   el.innerHTML = sleeves.map((s) => {
     const chips = (s.sectors || []).slice(0, 8).map((x) => `<span class="chip">${x.sector} <b>${pct(x.weight)}</b></span>`).join("");
     const dd = s.est_drawdown != null ? signedPct(s.est_drawdown) : "—";
     const end10k = money(((s.path || []).slice(-1)[0] || {}).expected);
+    const beats = sleeveBeatsSpy(s, hurdle);
+    const edge = sleeveEdge(s, hurdle);
+    const alloc = holdingsAllocation(s);
     return `<article class="port-card" id="port-${s.id}" style="--tier:${s.color}">
       <div class="port-card-top">
         <div class="port-card-head">
           <span class="tier-badge">${s.label}</span>
+          ${beats ? `<span class="spy-badge pos">Outruns S&amp;P 500</span>` : `<span class="spy-badge muted">Trails S&amp;P 500</span>`}
           <h2>${signedPct(s.exp_total)} <small>over ${years} ${years === 1 ? "year" : "years"}</small></h2>
           <div class="tagline">${s.tagline || ""}</div>
         </div>
         <div class="port-hero-stat">
           <div class="growth">${signedPct(s.exp_ann, 1)}<small>/yr</small></div>
-          <div class="hint">${s.n} names · $10k → ${end10k}</div>
+          <div class="hint">${signedPct(edge, 1)} vs 11.5% S&amp;P · ${s.n} names · $10k → ${end10k}</div>
         </div>
       </div>
       ${bandRail(s)}
       <div class="port-stats">
+        <div class="kpi"><div class="lbl">Vs S&amp;P 500</div><div class="val ${beats ? "pos" : "neg"}">${signedPct(edge, 1)}</div><div class="kpi-sub">${beats ? "above 11.5%/yr" : "below 11.5%/yr"}</div></div>
         <div class="kpi"><div class="lbl">Confidence</div><div class="val">${pct(s.confidence)}</div><div class="conf-meter"><div style="width:${Math.round(Number(s.confidence || 0) * 100)}%"></div></div></div>
         <div class="kpi"><div class="lbl">Blended vol</div><div class="val">${pct(s.risk_vol)}</div></div>
         <div class="kpi"><div class="lbl">Est. drawdown</div><div class="val ${s.est_drawdown != null && s.est_drawdown < 0 ? "neg" : ""}">${dd}</div></div>
-        <div class="kpi"><div class="lbl">Sectors</div><div class="val" style="font-size:.82rem">${(s.sectors || []).length}</div></div>
       </div>
       <div class="sector-chips">${chips}</div>
       ${renderSwitches(s, years)}
+      <div class="alloc-block">
+        <div class="hold-head"><span>Total allocation</span><span class="hint">sums to 100%</span></div>
+        <p class="alloc-line">${alloc || "—"}</p>
+      </div>
       <div class="hold-section">
         <div class="hold-head"><span>Holdings</span><span class="hint">${s.n} positions</span></div>
         <div class="hold-grid">${renderHoldings(s, years)}</div>
@@ -2147,6 +2237,7 @@ async function loadPortfolios(refresh = false) {
     : `Loading ${years}-year model portfolios…`;
   $("port-list").innerHTML = "";
   $("port-summary").innerHTML = "";
+  if ($("port-vs-spy")) { $("port-vs-spy").hidden = true; $("port-vs-spy").innerHTML = ""; }
   $("port-chart-wrap").hidden = true;
   $("resolve-hint").textContent = `Scoring ${years}-year expected return and confidence…`;
   setBusy("port-load", true);

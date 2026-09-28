@@ -34,6 +34,8 @@ ENRICH_CACHE_HOURS = 6.0
 LONG_RUN_GROWTH = 0.06
 MARKET_PRIOR = 0.07
 BALLAST_PRIOR = {"SPY": 0.07, "TLT": 0.04, "GLD": 0.05}
+# Long-run S&P 500 annualized used as the "outrun the index" hurdle on the Portfolios tab.
+SPY_ANN = 0.115
 
 TIERS: list[dict[str, Any]] = [
     {
@@ -471,6 +473,22 @@ def _diversify(rows: list[dict[str, Any]], n: int, max_sector: int, used: set[st
     return picked
 
 
+def _pct_parts(weights: list[float]) -> list[int]:
+    """Integer percents that sum to 100 (largest-remainder)."""
+    if not weights:
+        return []
+    raw = [max(0.0, float(x)) * 100.0 for x in weights]
+    total = sum(raw) or 1.0
+    raw = [x * 100.0 / total for x in raw]
+    floors = [int(math.floor(x)) for x in raw]
+    leftover = 100 - sum(floors)
+    order = sorted(range(len(raw)), key=lambda i: (raw[i] - floors[i], raw[i]), reverse=True)
+    out = list(floors)
+    for i in order[: max(leftover, 0)]:
+        out[i] += 1
+    return out
+
+
 def _cap_weights(weights: list[float], cap: float) -> list[float]:
     w = list(weights)
     for _ in range(20):
@@ -509,10 +527,12 @@ def _allocate(tier: str, rows: list[dict[str, Any]], cap: float) -> list[dict[st
             raw.append(c / v ** 2 * (1.6 if r.get("ballast") else 1.0))
     total = sum(raw) or 1.0
     weights = _cap_weights([x / total for x in raw], cap)
+    parts = _pct_parts(weights)
     out = []
-    for r, w in zip(rows, weights):
+    for r, w, p in zip(rows, weights, parts):
         item = {k: v for k, v in r.items() if k != "components"}
         item["weight"] = round(float(w), 4)
+        item["weight_pct"] = int(p)
         out.append(item)
     out.sort(key=lambda x: x["weight"], reverse=True)
     return out
@@ -520,8 +540,13 @@ def _allocate(tier: str, rows: list[dict[str, Any]], cap: float) -> list[dict[st
 
 def _sleeve(tier: dict[str, Any], holdings: list[dict[str, Any]], h: int) -> dict[str, Any]:
     if not holdings:
-        return {**{k: tier[k] for k in ("id", "label", "tagline", "color")}, "n": 0, "holdings": [],
-                "exp_ann": 0, "exp_total": 0, "confidence": 0, "risk_vol": 0, "band": {}, "path": [], "thesis": "Not enough names met this tier's filters."}
+        return {
+            **{k: tier[k] for k in ("id", "label", "tagline", "color")},
+            "n": 0, "holdings": [], "allocation": "",
+            "exp_ann": 0, "exp_total": 0, "confidence": 0, "risk_vol": 0, "band": {}, "path": [],
+            "spy_ann": SPY_ANN, "beats_spy": False, "edge_vs_spy": round(-SPY_ANN, 4),
+            "thesis": "Not enough names met this tier's filters.",
+        }
     w = np.array([x["weight"] for x in holdings])
     ann = float(np.sum(w * np.array([x["exp_ann"] for x in holdings])))
     vols = np.array([x.get("vol") or 0.3 for x in holdings])
@@ -562,10 +587,20 @@ def _sleeve(tier: dict[str, Any], holdings: list[dict[str, Any]], h: int) -> dic
     sectors: dict[str, float] = {}
     for x in holdings:
         sectors[str(x.get("sector") or "—")] = sectors.get(str(x.get("sector") or "—"), 0.0) + x["weight"]
-    top = ", ".join(f"{x['ticker']} {x['weight']:.0%}" for x in holdings[:4])
+    top = ", ".join(
+        f"{x['ticker']} {int(x.get('weight_pct') if x.get('weight_pct') is not None else round(x['weight'] * 100))}%"
+        for x in holdings[:4]
+    )
+    allocation = ", ".join(
+        f"{x['ticker']} {int(x.get('weight_pct') if x.get('weight_pct') is not None else round(x['weight'] * 100))}%"
+        for x in holdings
+    )
+    edge = ann - SPY_ANN
+    beats = ann > SPY_ANN
     thesis = (
         f"{tier['label']} · {h}y: {len(holdings)} names, model {ann:+.1%}/yr → {total:+.0%} total, "
-        f"blended vol {vol:.0%}, confidence {conf:.0%}. Largest: {top}."
+        f"{'outruns' if beats else 'trails'} S&P 500 {SPY_ANN:.1%}/yr by {abs(edge) * 100:.1f} pp, "
+        f"blended vol {vol:.0%}, confidence {conf:.0%}. Allocation: {allocation}."
     )
     return {
         **{k: tier[k] for k in ("id", "label", "tagline", "color")},
@@ -579,6 +614,10 @@ def _sleeve(tier: dict[str, Any], holdings: list[dict[str, Any]], h: int) -> dic
         "path": path,
         "sectors": [{"sector": k, "weight": round(v, 4)} for k, v in sorted(sectors.items(), key=lambda kv: -kv[1])],
         "holdings": holdings,
+        "allocation": allocation,
+        "spy_ann": SPY_ANN,
+        "beats_spy": beats,
+        "edge_vs_spy": round(edge, 4),
         "thesis": thesis,
     }
 
@@ -733,6 +772,8 @@ def _empty_portfolios(universe: str, years: int, note: str | None = None) -> dic
             "quality, valuation, realised CAGR, momentum and the desk rating. Not a forecast or advice."
         ),
         "sleeves": [],
+        "spy_ann": SPY_ANN,
+        "beats_spy": [],
     }
 
 
@@ -752,17 +793,22 @@ def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool =
         prev_built = _build_sleeves(_score_names(names, prev_years), prev_years) if prev_years else None
         _horizon_switches(built, prev_built, scored, years, prev_years)
         sleeves = [built[t["id"]] for t in TIERS]
+        beaters = [s["label"] for s in sleeves if s.get("beats_spy")]
         payload = {
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "universe": universe,
             "years": years,
             "horizons": list(HORIZONS),
             "n_candidates": len(scored),
+            "spy_ann": SPY_ANN,
+            "beats_spy": beaters,
             "note": (
                 f"{years}-year figures are model estimates blending street targets, fundamental growth, "
                 "quality, valuation, realised CAGR, momentum and the desk rating — weights shift toward "
-                "fundamentals as the horizon lengthens. Confidence reflects data completeness, signal "
-                "agreement, volatility and history depth. Not a forecast or advice."
+                "fundamentals as the horizon lengthens. Sleeves with expected annualised return above "
+                f"the S&P 500's {SPY_ANN:.1%} long-run hurdle are flagged as outrunning the index. "
+                "Confidence reflects data completeness, signal agreement, volatility and history depth. "
+                "Not a forecast or advice."
             ),
             "sleeves": sleeves,
         }
