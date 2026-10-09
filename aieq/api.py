@@ -301,6 +301,18 @@ def portfolios(
     return payload
 
 
+@app.get("/etfs")
+def etfs(response: Response, refresh: bool = Query(default=False)) -> dict[str, Any]:
+    from aieq.etfs import suggest_etfs
+
+    payload = suggest_etfs(refresh=refresh)
+    if refresh:
+        response.headers["Cache-Control"] = "no-store"
+    elif payload.get("funds") is not None:
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=600, stale-while-revalidate=86400"
+    return payload
+
+
 @app.get("/financials")
 def financials(
     ticker: str = Query(..., min_length=1),

@@ -56,6 +56,11 @@ def portfolios_page():
     return _desk("portfolios")
 
 
+@app.route("/etfs")
+def etfs_page():
+    return _desk("etfs")
+
+
 @app.route("/ticker/<path:ticker>")
 def ticker_page(ticker: str):
     return _desk(

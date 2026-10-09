@@ -21,6 +21,7 @@
     { "source": "/financials/:path*", "destination": "/index.html" },
     { "source": "/options", "destination": "/index.html" },
     { "source": "/volume", "destination": "/index.html" },
-    { "source": "/portfolios", "destination": "/index.html" }
+    { "source": "/portfolios", "destination": "/index.html" },
+    { "source": "/etfs", "destination": "/index.html" }
   ]
 }

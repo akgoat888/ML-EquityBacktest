@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Equities Desk</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261009c" />
+  <link rel="stylesheet" href="/static/style.css?v=20261009e" />
 </head>
 <body data-api="" data-page="" data-ticker="" data-period="5y" data-horizon="5">
 <script>
@@ -34,6 +34,8 @@
     ticker = q.get("ticker") || "";
   } else if (path === "/portfolios") {
     page = "portfolios";
+  } else if (path === "/etfs") {
+    page = "etfs";
   }
   b.dataset.page = page;
   b.dataset.ticker = ticker;
@@ -54,31 +56,32 @@
       <a href="/volume" data-view="volume">Volume</a>
       <a href="/financials" data-view="financials">Financials</a>
       <a href="/portfolios" data-view="portfolios">Portfolios</a>
+      <a href="/etfs" data-view="etfs">ETFs</a>
       <button type="button" class="icon-btn" id="shortcut-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
     </nav>
   </header>
 
   <form id="analyze-form" class="toolbar">
     <label data-tool="ticker" class="field-ac">Ticker
-      <input id="ticker" name="ticker" placeholder="TSMC, NVDA, AEM…" value="{{ ticker }}"
+      <input id="ticker" name="ticker" placeholder="TSMC, NVDA, AEM…" value=""
              autocomplete="off" role="combobox" aria-expanded="false" aria-controls="ticker-ac" />
       <div class="ac-menu" id="ticker-ac" role="listbox" hidden></div>
     </label>
     <label data-tool="period">History
       <select id="period">
-        <option {% if period == '2y' %}selected{% endif %}>2y</option>
-        <option {% if period == '5y' %}selected{% endif %}>5y</option>
-        <option {% if period == '10y' %}selected{% endif %}>10y</option>
-        <option {% if period == 'max' %}selected{% endif %}>max</option>
+        <option value="2y">2y</option>
+        <option value="5y" selected>5y</option>
+        <option value="10y">10y</option>
+        <option value="max">max</option>
       </select>
     </label>
     <label class="has-tip" data-tool="horizon">Horizon
       <select id="horizon">
-        <option {% if horizon == '1' %}selected{% endif %}>1</option>
-        <option {% if horizon == '3' %}selected{% endif %}>3</option>
-        <option {% if horizon == '5' %}selected{% endif %}>5</option>
-        <option {% if horizon == '10' %}selected{% endif %}>10</option>
-        <option {% if horizon == '21' %}selected{% endif %}>21</option>
+        <option value="1">1</option>
+        <option value="3">3</option>
+        <option value="5" selected>5</option>
+        <option value="10">10</option>
+        <option value="21">21</option>
       </select>
       <span class="tip">Sessions the model looks ahead (5 = next week). Applies to Analysis, not the board scan.</span>
     </label>
@@ -282,12 +285,27 @@
     <div id="port-list" class="port-grid"></div>
   </section>
 
+  <section id="view-etfs" class="view" hidden>
+    <div class="port-head">
+      <div>
+        <h2 class="port-title">ETFs</h2>
+        <p class="hint" id="etf-status">Only funds expected to outrun the S&amp;P 500’s 11.5%/yr are listed, with the latest holdings and sector mix.</p>
+      </div>
+      <div class="port-controls">
+        <button type="button" class="primary" id="etf-load">Refresh</button>
+      </div>
+    </div>
+    <div id="etf-empty" class="empty">Loading funds that clear the S&amp;P 500 hurdle…</div>
+    <div id="etf-list" class="etf-grid"></div>
+  </section>
+
   <nav class="mobile-nav" id="mobile-nav" aria-label="Primary">
     <a href="/" data-view="home">Home</a>
     <a href="/options" data-view="options">Options</a>
     <a href="/volume" data-view="volume">Volume</a>
     <a href="/financials" data-view="financials" title="Financials">Fin</a>
     <a href="/portfolios" data-view="portfolios" title="Portfolios">Ports</a>
+    <a href="/etfs" data-view="etfs" title="ETFs">ETFs</a>
   </nav>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
@@ -310,6 +328,7 @@
         <div class="shortcut-row"><span>Go to Volume</span><kbd>g</kbd> <kbd>v</kbd></div>
         <div class="shortcut-row"><span>Go to Financials</span><kbd>g</kbd> <kbd>f</kbd></div>
         <div class="shortcut-row"><span>Go to Portfolios</span><kbd>g</kbd> <kbd>p</kbd></div>
+        <div class="shortcut-row"><span>Go to ETFs</span><kbd>g</kbd> <kbd>e</kbd></div>
         <div class="shortcut-row"><span>Close menus / this sheet</span><kbd>Esc</kbd></div>
         <div class="shortcut-row"><span>Show this sheet</span><kbd>?</kbd></div>
       </div>
@@ -317,6 +336,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js?v=20261009c"></script>
+  <script src="/static/app.js?v=20261009e"></script>
 </body>
 </html>

@@ -1,4 +1,25 @@
 const API = (document.body.dataset.api || "").replace(/\/$/, "");
+
+function cleanTicker(raw) {
+  const t = String(raw || "").trim();
+  if (!t || /[{}\s]/.test(t)) return "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9.\-]{0,23}$/.test(t)) return "";
+  return t.toUpperCase();
+}
+
+function activeTicker() {
+  return cleanTicker($("ticker") && $("ticker").value);
+}
+
+function rememberTicker(raw) {
+  const t = cleanTicker(raw);
+  if (!t) return "";
+  const box = $("ticker");
+  if (box) box.value = t;
+  document.body.dataset.ticker = t;
+  try { sessionStorage.setItem("desk_ticker", t); } catch { /* private mode */ }
+  return t;
+}
 const $ = (id) => document.getElementById(id);
 const state = {
   rows: [],
@@ -272,7 +293,7 @@ function sma(values, window) {
 async function api(path, opts = {}) {
   const urls = [API + path];
   const base = path.split("?")[0];
-  if (/^\/(financials|options|volume|portfolios|quote|search)/.test(base)) {
+  if (/^\/(financials|options|volume|portfolios|etfs|quote|search)/.test(base)) {
     urls.push(window.location.origin + "/api" + path);
   }
   let lastErr = new Error("Request failed");
@@ -355,7 +376,7 @@ function renderQuote(q) {
 }
 
 async function showQuote(ticker) {
-  const t = (ticker || "").trim();
+  const t = cleanTicker(ticker);
   if (!t) return;
   state.quoteTicker = t;
   startQuotePoll();
@@ -372,7 +393,7 @@ async function showQuote(ticker) {
 function startQuotePoll() {
   if (state.quotePoll) return;
   state.quotePoll = setInterval(() => {
-    const t = state.quoteTicker || ($("ticker") && $("ticker").value.trim());
+    const t = cleanTicker(state.quoteTicker) || activeTicker();
     if (t) showQuote(t);
   }, 20000);
 }
@@ -384,6 +405,7 @@ const VIEW_META = {
   volume: { title: "Volume · AI Equities Desk", sub: "Volume · concentrated $10M+ prints" },
   financials: { title: "Financials · AI Equities Desk", sub: "Financials · statements + stance" },
   portfolios: { title: "Portfolios · AI Equities Desk", sub: "Portfolios · four risk tiers per horizon" },
+  etfs: { title: "ETFs · AI Equities Desk", sub: "ETFs · funds expected to outrun the S&P 500" },
 };
 
 function setNav(name) {
@@ -393,9 +415,9 @@ function setNav(name) {
 }
 
 function applyViewMode(name) {
-  document.body.classList.toggle("mode-portfolios", name === "portfolios");
+  document.body.classList.toggle("mode-portfolios", name === "portfolios" || name === "etfs");
   const form = $("analyze-form");
-  if (form) form.hidden = name === "portfolios";
+  if (form) form.hidden = name === "portfolios" || name === "etfs";
   if (name === "portfolios") syncPortUniverse();
 }
 
@@ -415,7 +437,7 @@ function setPortUniverse(val) {
 
 function setView(name, { ticker } = {}) {
   state.view = name;
-  ["home", "dive", "options", "volume", "financials", "portfolios"].forEach((key) => {
+  ["home", "dive", "options", "volume", "financials", "portfolios", "etfs"].forEach((key) => {
     const el = $("view-" + key);
     if (!el) return;
     el.hidden = key !== name;
@@ -581,16 +603,27 @@ function showHome(push = true) {
   if (push) history.pushState({ view: "home" }, "", "/");
 }
 
+function pageUrl(name, ticker) {
+  const t = cleanTicker(ticker);
+  if (!name || name === "home") return "/";
+  if (name === "financials") return t ? "/financials/" + encodeURIComponent(t) : "/financials";
+  if (name === "dive" || name === "ticker") return t ? tickerUrl(t) : "/";
+  if ((name === "options" || name === "volume") && t) return "/" + name + "?ticker=" + encodeURIComponent(t);
+  return "/" + name;
+}
+
 function showPage(name, push = true) {
+  const t = activeTicker();
+  if (t) rememberTicker(t);
   setView(name);
-  if (push) history.pushState({ view: name }, "", "/" + (name === "home" ? "" : name));
+  if (push) history.pushState({ view: name, ticker: t }, "", pageUrl(name, t));
   updatePeriodTags();
   if (name === "options") loadOptions();
   if (name === "volume") loadVolume();
   if (name === "portfolios") loadPortfolios();
+  if (name === "etfs") loadEtfs(false);
   if (name === "financials") {
     setFinFreq(finFreq());
-    const t = $("ticker").value.trim();
     if (t) loadFinancials(t);
   }
 }
@@ -604,9 +637,8 @@ function tickerUrl(ticker) {
 }
 
 function openTicker(ticker, { push = true } = {}) {
-  const t = (ticker || "").trim();
+  const t = rememberTicker(ticker);
   if (!t) return;
-  $("ticker").value = t;
   pushRecent(t);
   showQuote(t);
   setView("dive", { ticker: t });
@@ -615,20 +647,17 @@ function openTicker(ticker, { push = true } = {}) {
 }
 
 function gotoView(name) {
-  const t = $("ticker").value.trim();
+  const t = activeTicker();
+  if (t) rememberTicker(t);
   if (name === "home") {
     showHome(true);
     return;
   }
-  if (name === "financials") {
-    window.location.href = t ? "/financials/" + encodeURIComponent(t) : "/financials";
-    return;
-  }
-  window.location.href = "/" + name + (t ? "?ticker=" + encodeURIComponent(t) : "");
+  showPage(name, true);
 }
 
 function runForCurrentView(ticker) {
-  const t = (ticker || $("ticker").value).trim();
+  const t = rememberTicker(ticker || activeTicker());
   if (!t) {
     $("resolve-hint").textContent = "Type a ticker first.";
     $("ticker").focus();
@@ -643,10 +672,12 @@ function runForCurrentView(ticker) {
 }
 
 function reloadCurrentView() {
-  const t = $("ticker").value.trim();
+  const t = activeTicker();
+  if (t) rememberTicker(t);
   if (state.view === "options") loadOptions();
   else if (state.view === "volume") loadVolume();
   else if (state.view === "portfolios") loadPortfolios(false);
+  else if (state.view === "etfs") loadEtfs(false);
   else if (state.view === "financials" && t) loadFinancials(t);
   else if (state.view === "dive" && t) loadDive(t);
   else loadBoard().catch((err) => toast(err.message, "err"));
@@ -656,14 +687,19 @@ function reloadCurrentView() {
 function recentTickers() {
   try {
     const list = JSON.parse(localStorage.getItem("desk_recent") || "[]");
-    return Array.isArray(list) ? list.filter(Boolean).slice(0, 8) : [];
+    const clean = (Array.isArray(list) ? list : []).map(cleanTicker).filter(Boolean);
+    const uniq = [...new Set(clean)].slice(0, 8);
+    if (uniq.length !== (Array.isArray(list) ? list.length : 0)) {
+      localStorage.setItem("desk_recent", JSON.stringify(uniq));
+    }
+    return uniq;
   } catch {
     return [];
   }
 }
 
 function pushRecent(ticker) {
-  const sym = String(ticker || "").trim().toUpperCase();
+  const sym = cleanTicker(ticker);
   if (!sym) return;
   const list = [sym, ...recentTickers().filter((t) => t !== sym)].slice(0, 8);
   localStorage.setItem("desk_recent", JSON.stringify(list));
@@ -776,7 +812,7 @@ function isTyping(e) {
 
 function bindShortcuts() {
   let gAt = 0;
-  const GO = { h: "home", o: "options", v: "volume", f: "financials", p: "portfolios" };
+  const GO = { h: "home", o: "options", v: "volume", f: "financials", p: "portfolios", e: "etfs" };
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       acClose();
@@ -1787,7 +1823,7 @@ function paintOptions() {
 
 async function loadOptions({ autoRefresh = true } = {}) {
   const uni = $("universe").value;
-  const t = $("ticker").value.trim();
+  const t = activeTicker();
   const ym = tapeYM();
   $("options-empty").textContent = `Loading ${ym.label || ""} option tape (≥ $1M premium)…`;
   $("options-empty").hidden = false;
@@ -1795,6 +1831,7 @@ async function loadOptions({ autoRefresh = true } = {}) {
   setBusy("options-load", true);
   try {
     if (t) {
+      rememberTicker(t);
       await loadOptionsTicker(t);
       return;
     }
@@ -1934,7 +1971,7 @@ function paintVolume() {
 
 async function loadVolume({ autoRefresh = true } = {}) {
   const uni = $("universe").value;
-  const t = $("ticker").value.trim();
+  const t = activeTicker();
   const ym = tapeYM();
   $("volume-empty").textContent = `Loading ${ym.label || ""} prints ≥ ${money(minPrint())}…`;
   $("volume-empty").hidden = false;
@@ -1942,6 +1979,7 @@ async function loadVolume({ autoRefresh = true } = {}) {
   setBusy("volume-load", true);
   try {
     if (t) {
+      rememberTicker(t);
       await loadVolumeTicker(t);
       return;
     }
@@ -2022,6 +2060,8 @@ function renderFinancials(data) {
 }
 
 async function loadFinancials(ticker) {
+  const t = rememberTicker(ticker);
+  if (!t) return;
   const periodTxt = finPeriodLabel();
   $("fin").hidden = true;
   $("fin-empty").hidden = false;
@@ -2029,17 +2069,17 @@ async function loadFinancials(ticker) {
   $("resolve-hint").textContent = "Pulling income, cash flow, balance sheet…";
   setBusy("analyze-btn", true);
   setBusy("fin-load", true);
-  showQuote(ticker);
+  showQuote(t);
   try {
-    const data = await api("/financials?ticker=" + encodeURIComponent(ticker) + finPeriodQuery());
+    const data = await api("/financials?ticker=" + encodeURIComponent(t) + finPeriodQuery());
     syncFinPeriodFromResponse(data);
-    $("ticker").value = data.ticker || ticker;
+    rememberTicker(data.ticker || t);
     $("resolve-hint").textContent = `${data.ticker} · ${data.name || ""}`;
     renderFinancials(data);
     const live = $("live-quote");
     const finPx = $("fin-live-px");
     if (live && finPx && !live.hidden) finPx.innerHTML = live.innerHTML;
-    showQuote(data.ticker || ticker);
+    showQuote(data.ticker || t);
   } catch (err) {
     $("resolve-hint").innerHTML = `<span class="err">${esc(err.message)}</span>`;
     $("fin-empty").textContent = err.message;
@@ -2052,21 +2092,23 @@ async function loadFinancials(ticker) {
 }
 
 async function loadOptionsTicker(ticker) {
+  const t = rememberTicker(ticker);
+  if (!t) return;
   const ym = tapeYM();
-  $("options-empty").textContent = `Scanning ${ticker} ${ym.label} tape for ≥ $1M premiums…`;
+  $("options-empty").textContent = `Scanning ${t} ${ym.label} tape for ≥ $1M premiums…`;
   $("options-empty").hidden = false;
   setOptionsAsOf(null);
   skeletonRows($("options-list"), 8);
-  showQuote(ticker);
+  showQuote(t);
   try {
-    const data = await api("/options/flags?ticker=" + encodeURIComponent(ticker) + "&universe=" + encodeURIComponent($("universe").value) + ymQuery());
+    const data = await api("/options/flags?ticker=" + encodeURIComponent(t) + "&universe=" + encodeURIComponent($("universe").value) + ymQuery());
     renderOptions(data.rows || []);
     setOptionsAsOf(data.as_of);
     $("options-status").textContent = `${ym.label} · ${data.n || 0} contracts ≥ $1M on ${data.ticker}` + (data.note ? " · " + data.note : "");
     $("resolve-hint").textContent = data.ticker;
-    showQuote(data.ticker || ticker);
+    showQuote(data.ticker || t);
     if (!(data.rows || []).length) {
-      $("options-empty").textContent = `No ≥ $1M ${ym.label} expiries listed for ${data.ticker || ticker}. Yahoo only keeps the current month's chain after prior months expire.`;
+      $("options-empty").textContent = `No ≥ $1M ${ym.label} expiries listed for ${data.ticker || t}. Yahoo only keeps the current month's chain after prior months expire.`;
       $("options-empty").hidden = false;
     }
   } catch (err) {
@@ -2078,19 +2120,21 @@ async function loadOptionsTicker(ticker) {
 }
 
 async function loadVolumeTicker(ticker) {
+  const t = rememberTicker(ticker);
+  if (!t) return;
   const ym = tapeYM();
-  $("volume-empty").textContent = `Scanning ${ticker} ${ym.label} for prints ≥ ${money(minPrint())}…`;
+  $("volume-empty").textContent = `Scanning ${t} ${ym.label} for prints ≥ ${money(minPrint())}…`;
   $("volume-empty").hidden = false;
   skeletonRows($("volume-list"), 8);
-  showQuote(ticker);
+  showQuote(t);
   try {
-    const data = await api("/volume/large?ticker=" + encodeURIComponent(ticker) + ymQuery() + minPrintQuery());
+    const data = await api("/volume/large?ticker=" + encodeURIComponent(t) + ymQuery() + minPrintQuery());
     renderVolume(data);
     $("volume-status").textContent = `${ym.label} · ${data.n || 0} prints ≥ ${money(minPrint())} on ${data.ticker} (${data.interval || ""} bars)` + (data.note ? " · " + data.note : "");
     $("resolve-hint").textContent = data.ticker;
-    showQuote(data.ticker || ticker);
+    showQuote(data.ticker || t);
     if (!(data.rows || []).length) {
-      $("volume-empty").textContent = `No ${ym.label} bar of at least ${money(minPrint())} for ${ticker}. Try a smaller min print size.`;
+      $("volume-empty").textContent = `No ${ym.label} bar of at least ${money(minPrint())} for ${t}. Try a smaller min print size.`;
       $("volume-empty").hidden = false;
     }
   } catch (err) {
@@ -2438,6 +2482,123 @@ async function loadPortfolios(refresh = false) {
     setBusy("port-load", false);
   }
 }
+
+function moneyCompact(n) {
+  if (n === null || n === undefined || !Number.isFinite(Number(n))) return "—";
+  const v = Number(n);
+  if (v >= 1e12) return "$" + (v / 1e12).toFixed(2) + "T";
+  if (v >= 1e9) return "$" + (v / 1e9).toFixed(1) + "B";
+  if (v >= 1e6) return "$" + (v / 1e6).toFixed(0) + "M";
+  return "$" + Math.round(v).toLocaleString();
+}
+
+function renderEtfs(data) {
+  const el = $("etf-list");
+  const empty = $("etf-empty");
+  if (!el || !empty) return;
+  const hurdle = Number(data.spy_ann || 0.115);
+  const funds = (data.funds || []).filter((f) => Number(f.exp_ann) > hurdle && (f.holdings || []).length);
+  const status = $("etf-status");
+  if (status) {
+    status.textContent = funds.length
+      ? `${funds.length} fund${funds.length === 1 ? "" : "s"} above the S&P 500's ${(hurdle * 100).toFixed(1)}%/yr · holdings as reported${data.as_of ? " · " + data.as_of : ""}`
+      : "Only funds expected to outrun the S&P 500’s 11.5%/yr are listed.";
+  }
+  if (!funds.length) {
+    empty.hidden = false;
+    empty.textContent = "No ETF in this screen clears the S&P 500's 11.5%/yr hurdle.";
+    el.innerHTML = "";
+    return;
+  }
+  empty.hidden = true;
+  el.innerHTML = funds.map((f) => {
+    const sectors = (f.sectors || []).filter((s) => Number(s.weight) >= 0.005);
+    const sectorHtml = sectors.map((s) => {
+      const w = Math.max(0, Math.min(100, Number(s.weight) * 100));
+      return `<div class="sector-row">
+        <span>${esc(s.sector)}</span>
+        <span class="sector-track"><span style="width:${w.toFixed(1)}%"></span></span>
+        <span class="num">${w.toFixed(1)}%</span>
+      </div>`;
+    }).join("");
+    const holds = f.holdings || [];
+    const weightSum = holds.reduce((sum, h) => sum + Number(h.weight || 0), 0);
+    const holdLabel = weightSum >= 0.9 ? "Current holdings" : `Largest positions · ${holds.length} names`;
+    const holdRows = holds.map((h) => `<tr>
+      <td><a href="${tickerUrl(h.ticker)}" data-open="${esc(h.ticker)}">${esc(h.ticker)}</a></td>
+      <td class="etf-hold-name">${esc(h.name || "")}</td>
+      <td class="num">${(Number(h.weight || 0) * 100).toFixed(1)}%</td>
+    </tr>`).join("");
+    const exp = f.expense == null ? "—" : (Number(f.expense) * 100).toFixed(2) + "%";
+    return `<article class="etf-card">
+      <div class="port-card-top">
+        <div class="port-card-head">
+          <span class="spy-badge pos">Outruns S&amp;P 500</span>
+          <h2><a href="${tickerUrl(f.ticker)}" data-open="${esc(f.ticker)}">${esc(f.ticker)}</a> <small>${esc(f.name || "")}</small></h2>
+          <div class="tagline">${esc(f.why || "")}</div>
+        </div>
+        <div class="port-hero-stat">
+          <div class="growth">${signedPct(f.exp_ann, 1)}<small>/yr</small></div>
+          <div class="hint">${signedPct(f.edge_vs_spy, 1)} vs 11.5% S&amp;P · 10y ${f.cagr_10y == null ? "—" : signedPct(f.cagr_10y, 1)}</div>
+        </div>
+      </div>
+      <div class="etf-meta">
+        <span>AUM ${moneyCompact(f.aum)}</span>
+        <span>Expense ${exp}</span>
+        <span>${f.as_of ? "Holdings " + esc(f.as_of) : ""}</span>
+      </div>
+      <div class="etf-split">
+        <div>
+          <div class="chart-title"><span>Sectors</span></div>
+          <div class="sector-bars">${sectorHtml || `<div class="hint">Sector mix not reported.</div>`}</div>
+        </div>
+        <div>
+          <div class="chart-title"><span>${holdLabel}</span></div>
+          <div class="table-scroll">
+            <table class="etf-holds">
+              <thead><tr><th>Ticker</th><th>Name</th><th class="num">Weight</th></tr></thead>
+              <tbody>${holdRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </article>`;
+  }).join("");
+  el.querySelectorAll("[data-open]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      openTicker(a.dataset.open);
+    });
+  });
+}
+
+async function loadEtfs(refresh = false) {
+  const empty = $("etf-empty");
+  if (!refresh) {
+    try {
+      const res = await fetch("/etfs.json");
+      if (res.ok) renderEtfs(await res.json());
+    } catch { /* the API response still paints the tab */ }
+  } else {
+    const status = $("etf-status");
+    if (status) status.textContent = "Refreshing funds against the S&P 500 hurdle…";
+  }
+  setBusy("etf-load", true);
+  try {
+    const data = await api("/etfs" + (refresh ? "?refresh=true" : ""));
+    renderEtfs(data);
+  } catch (err) {
+    const blank = !$("etf-list").children.length;
+    if (blank && empty) {
+      empty.hidden = false;
+      empty.textContent = err.message;
+    }
+    if (refresh || blank) toast(err.message, "err");
+  } finally {
+    setBusy("etf-load", false);
+  }
+}
+
 async function loadDive(ticker) {
   $("dive").hidden = true;
   $("dive-empty").hidden = false;
@@ -2458,7 +2619,7 @@ async function loadDive(ticker) {
       ? `Resolved ${res.queried} → ${res.ticker} (${res.name || ""}).`
       : `${res.ticker} · ${res.name || ""}`;
     $("resolve-hint").textContent = extra;
-    if (res.ticker) $("ticker").value = res.ticker;
+    if (res.ticker) rememberTicker(res.ticker);
     setView("dive", { ticker: res.ticker || ticker });
     renderDive(res);
   } catch (err) {
@@ -2488,6 +2649,10 @@ function bindUi() {
     acClose();
     if (state.view === "portfolios") {
       loadPortfolios(true);
+      return;
+    }
+    if (state.view === "etfs") {
+      loadEtfs(true);
       return;
     }
     runForCurrentView();
@@ -2527,7 +2692,7 @@ function bindUi() {
   }
   if ($("fin-load")) {
     $("fin-load").addEventListener("click", () => {
-      const t = $("ticker").value.trim();
+      const t = activeTicker();
       if (!t) {
         $("fin-empty").textContent = "Type a ticker in the box above, then click Load statements.";
         $("fin-empty").hidden = false;
@@ -2539,21 +2704,21 @@ function bindUi() {
   document.querySelectorAll("#fin-freq button").forEach((b) => {
     b.addEventListener("click", () => {
       setFinFreq(b.dataset.freq);
-      const t = $("ticker").value.trim();
+      const t = activeTicker();
       if (state.view === "financials" && t) loadFinancials(t);
     });
   });
   document.querySelectorAll("#fin-quarter button").forEach((b) => {
     b.addEventListener("click", () => {
       setFinQuarter(b.dataset.quarter);
-      const t = $("ticker").value.trim();
+      const t = activeTicker();
       if (state.view === "financials" && t) loadFinancials(t);
     });
   });
   if ($("fin-year")) {
     $("fin-year").addEventListener("change", () => {
       setFinYear($("fin-year").value);
-      const t = $("ticker").value.trim();
+      const t = activeTicker();
       if (state.view === "financials" && t) loadFinancials(t);
     });
   }
@@ -2572,6 +2737,7 @@ function bindUi() {
   }
   if ($("volume-load")) $("volume-load").addEventListener("click", () => loadVolume());
   if ($("port-load")) $("port-load").addEventListener("click", () => loadPortfolios(true));
+  if ($("etf-load")) $("etf-load").addEventListener("click", () => loadEtfs(true));
   document.querySelectorAll("#port-years button").forEach((b) => {
     b.addEventListener("click", () => {
       setPortYears(Number(b.dataset.years));
@@ -2607,8 +2773,13 @@ function bindUi() {
   });
   $("f-all").addEventListener("click", resetFilters);
   $("ticker").addEventListener("change", () => {
-    const t = $("ticker").value.trim();
-    if (t) showQuote(t);
+    const t = rememberTicker($("ticker").value);
+    if (!t) {
+      document.body.dataset.ticker = "";
+      try { sessionStorage.removeItem("desk_ticker"); } catch { /* private mode */ }
+      return;
+    }
+    showQuote(t);
   });
   ["f-rating", "f-sector", "f-conf", "f-q"].forEach((id) => {
     $(id).addEventListener("input", () => {
@@ -2620,8 +2791,10 @@ function bindUi() {
   window.addEventListener("popstate", (e) => {
     const st = e.state || {};
     if (st.view === "dive") openTicker(st.ticker, { push: false });
-    else if (st.view && st.view !== "home") showPage(st.view, false);
-    else showHome(false);
+    else if (st.view && st.view !== "home") {
+      if (st.ticker) rememberTicker(st.ticker);
+      showPage(st.view, false);
+    } else showHome(false);
   });
 }
 
@@ -2636,6 +2809,16 @@ async function boot() {
     $("universe").value = saved;
   }
   syncPortUniverse();
+  const period = document.body.dataset.period;
+  const horizon = document.body.dataset.horizon;
+  if (period && [...$("period").options].some((o) => o.value === period)) $("period").value = period;
+  if (horizon && [...$("horizon").options].some((o) => o.value === horizon)) $("horizon").value = horizon;
+  const fromUrl = cleanTicker(document.body.dataset.ticker);
+  let fromSession = "";
+  try { fromSession = cleanTicker(sessionStorage.getItem("desk_ticker")); } catch { /* private mode */ }
+  const ticker = fromUrl || fromSession;
+  if ($("ticker") && /[{}]/.test($("ticker").value)) $("ticker").value = "";
+  if (ticker) rememberTicker(ticker);
   const uni = $("universe").value;
   if (!readBoardCache(uni)) skeletonCards($("board-list"), 8);
   paintUniverseShell(uni);
@@ -2646,7 +2829,7 @@ async function boot() {
     $("board-empty").hidden = false;
     toast("Backend unreachable — " + err.message, "err", 9000);
   });
-  const initial = (document.body.dataset.ticker || "").trim();
+  const initial = activeTicker();
   const page = document.body.dataset.page || "home";
   if (initial) showQuote(initial);
   if (page === "ticker" && initial) openTicker(initial, { push: false });
@@ -2654,7 +2837,7 @@ async function boot() {
     setView("financials");
     setFinFreq(finFreq());
     if (initial) loadFinancials(initial);
-  } else if (page === "options" || page === "volume" || page === "portfolios") showPage(page, false);
+  } else if (page === "options" || page === "volume" || page === "portfolios" || page === "etfs") showPage(page, false);
   else setView("home");
   updatePeriodTags();
   applyViewMode(state.view);
