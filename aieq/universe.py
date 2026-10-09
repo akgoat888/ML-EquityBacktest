@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -14,6 +14,10 @@ from aieq.config import CACHE_DIR, MEGA_LIQUID, ensure_cache_dir
 from aieq.yahoo import configure, gated, yf_ticker
 
 configure()
+
+# Constituent lists ship with the deploy so a Vercel cold start never waits on
+# Wikipedia or a market-cap crawl. Live lookups are a refresh-only path.
+SNAPSHOT_DIR = Path(__file__).resolve().parent / "snapshots"
 
 GLOBAL_NAMES = [
     "TSM", "ASML", "NVO", "SAP", "SHOP", "BABA", "PDD", "JD", "BIDU",
@@ -85,16 +89,39 @@ def _wiki_tickers(url: str, fallback: list[str] | None = None) -> list[str]:
     return list(fallback)
 
 
+def _read_snapshot(name: str) -> list[str] | None:
+    path = SNAPSHOT_DIR / f"{name}.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    rows = payload.get("tickers") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list) or not rows:
+        return None
+    return [str(x) for x in rows]
+
+
 def _cached_list(name: str, loader) -> list[str]:
+    """Membership from memory, then the bundled snapshot, then the durable store.
+
+    The snapshot is the hot path on Vercel: it is in the deployment bundle, so
+    changing universe does not wait on Wikipedia.
+    """
     now = time.time()
     hit = _list_mem.get(name)
     if hit and now - hit[0] < _LIST_TTL_SEC and hit[1]:
         return list(hit[1])
+    snap = _read_snapshot(name)
+    if snap:
+        _list_mem[name] = (now, snap)
+        return list(snap)
     from aieq.store import doc_age_hours, get_doc, put_doc
 
     try:
         age = doc_age_hours("wiki", name)
-        if age is not None and age * 3600 < _LIST_TTL_SEC:
+        if age is not None and age * 3600 < _LIST_TTL_SEC * 7:
             payload = get_doc("wiki", name)
             rows = payload.get("tickers") if isinstance(payload, dict) else payload
             if isinstance(rows, list) and rows:
@@ -118,7 +145,10 @@ def fetch_sp500() -> list[str]:
 
 
 def fetch_nasdaq100() -> list[str]:
-    return _cached_list("nasdaq100", lambda: _wiki_tickers("https://en.wikipedia.org/wiki/Nasdaq-100"))
+    return _cached_list(
+        "nasdaq100",
+        lambda: _wiki_tickers("https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"),
+    )
 
 
 def fetch_sp400() -> list[str]:
@@ -201,66 +231,53 @@ def market_cap(ticker: str) -> float | None:
     return None
 
 
-def _cap_universe(name: str, lo: float, hi: float, candidates: list[str]) -> list[str]:
-    from aieq.store import doc_age_hours, get_doc, put_doc
+def _stored_universe(name: str) -> list[str] | None:
+    from aieq.store import get_doc
 
-    age = doc_age_hours("universe", name)
-    if age is not None and age * 3600 < _CAP_TTL_SEC:
-        try:
-            cached = get_doc("universe", name)
-            rows = cached.get("tickers") if isinstance(cached, dict) else cached
-            if isinstance(rows, list) and rows:
-                return [str(x) for x in rows]
-        except Exception:
-            pass
+    try:
+        cached = get_doc("universe", name)
+        rows = cached.get("tickers") if isinstance(cached, dict) else cached
+        if isinstance(rows, list) and rows:
+            return [str(x) for x in rows]
+    except Exception:
+        pass
     path = CACHE_DIR / f"universe_{name}.json"
-    if path.exists() and (time.time() - path.stat().st_mtime) < _CAP_TTL_SEC:
+    if path.exists():
         try:
             rows = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(rows, list) and rows:
                 return [str(x) for x in rows]
         except Exception:
             pass
-    pool = list(dict.fromkeys(candidates))
-    with _mcap_lock:
-        store = dict(_mcap_cache())
+    return None
+
+
+def _cap_universe(name: str, lo: float, hi: float, candidates: list[str]) -> list[str]:
+    """Dollar-band membership. Never crawls market caps on a page load.
+
+    Order: process memory, bundled snapshot, last stored list. A cold Vercel
+    instance serves the snapshot in the deployment instead of looking up
+    hundreds of caps before the first name can render.
+    """
     now = time.time()
-    known: dict[str, float] = {}
-    missing: list[str] = []
-    for t in pool:
-        hit = store.get(t) or {}
-        if hit.get("cap") and (now - float(hit.get("ts") or 0)) < _CAP_TTL_SEC:
-            known[t] = float(hit["cap"])
-        else:
-            missing.append(t)
-
-    def _one(sym: str) -> tuple[str, float | None]:
-        return sym, _lookup_cap(sym)
-
-    fresh: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=4) as pool_ex:
-        futs = [pool_ex.submit(_one, t) for t in missing]
-        for fut in as_completed(futs):
-            try:
-                t, cap = fut.result()
-            except Exception:
-                continue
-            if cap:
-                fresh[t] = cap
-                known[t] = cap
-    if fresh:
-        with _mcap_lock:
-            store = _mcap_cache()
-            ts = time.time()
-            for t, cap in fresh.items():
-                store[t] = {"cap": cap, "ts": ts}
-            _save_mcap_cache(store)
-    kept = sorted(t for t, cap in known.items() if lo <= cap < hi)
-    put_doc("universe", name, {"tickers": kept})
-    try:
-        (ensure_cache_dir() / f"universe_{name}.json").write_text(json.dumps(kept), encoding="utf-8")
-    except OSError:
-        pass
+    mem_key = f"cap:{name}"
+    hit = _list_mem.get(mem_key)
+    if hit and now - hit[0] < _CAP_TTL_SEC and hit[1]:
+        return list(hit[1])
+    snap = _read_snapshot(name)
+    if snap:
+        _list_mem[mem_key] = (now, snap)
+        return list(snap)
+    stored = _stored_universe(name)
+    if stored:
+        _list_mem[mem_key] = (now, stored)
+        return stored
+    # Snapshot missing (local tree without aieq/snapshots). Return the index
+    # pool so the request still finishes; dollar bands apply once a snapshot
+    # or stored list exists.
+    kept = list(dict.fromkeys(candidates))
+    if kept:
+        _list_mem[mem_key] = (now, kept)
     return kept
 
 

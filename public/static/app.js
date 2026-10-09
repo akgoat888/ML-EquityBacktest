@@ -11,7 +11,10 @@ const state = {
   volPayload: null,
   volSort: { key: "notional", dir: "desc" },
   boardCache: {},
+  shellUni: null,
+  portCache: {},
   boardAbort: null,
+  pollBusy: false,
   scanHideTimer: null,
   scanDismissed: null,
   scanCursor: {},
@@ -1013,21 +1016,23 @@ function renderBoard() {
     [...list.querySelectorAll("details[open]")].map((el) => el.closest(".name-card")?.dataset.ticker).filter(Boolean)
   );
   list.innerHTML = rows.map((r) => {
-    const why = r.why || r.thesis || "";
+    const pending = !!r.pending;
+    const why = pending ? "" : (r.why || r.thesis || "");
     const openAttr = openWhy.has(r.ticker) ? " open" : "";
-    return `<article class="name-card" data-ticker="${esc(r.ticker)}">
+    const meta = pending
+      ? `<span>scoring…</span>`
+      : `<span>score ${Number(r.score || 0).toFixed(3)}</span>
+          <span>conf ${pct(r.confidence)}</span>
+          <span class="live-px">${fmt(r.price)}</span>`;
+    return `<article class="name-card${pending ? " is-pending" : ""}" data-ticker="${esc(r.ticker)}">
       <a class="name-card-link" href="${tickerUrl(r.ticker)}">
         <div class="name-card-top">
           <span class="ticker">${esc(r.ticker)}</span>
-          <span class="${ratingClass(r.rating)}">${esc(r.rating)}</span>
+          <span class="${pending ? "rating-pending" : ratingClass(r.rating)}">${pending ? "…" : esc(r.rating)}</span>
         </div>
-        <div class="name">${esc(r.name || "")} · ${esc(r.sector || "")}</div>
-        <canvas class="spark" width="280" height="64"></canvas>
-        <div class="meta-row">
-          <span>score ${Number(r.score || 0).toFixed(3)}</span>
-          <span>conf ${pct(r.confidence)}</span>
-          <span class="live-px">${fmt(r.price)}</span>
-        </div>
+        <div class="name">${pending ? "Scoring this name" : `${esc(r.name || "")} · ${esc(r.sector || "")}`}</div>
+        ${pending ? "" : `<canvas class="spark" width="280" height="64"></canvas>`}
+        <div class="meta-row">${meta}</div>
       </a>
       ${why ? `<details${openAttr}><summary>Why this rating</summary><div class="why">${why}</div></details>` : ""}
     </article>`;
@@ -1051,18 +1056,51 @@ function boardCacheKey(uni) {
   return "desk_board_" + String(uni || "global").toLowerCase();
 }
 
+const BOARD_LOCAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function slimBoard(data) {
+  const rows = (data.rows || []).map((r) => {
+    const copy = { ...r };
+    delete copy.spark;
+    delete copy.why;
+    delete copy.thesis;
+    delete copy.drivers;
+    return copy;
+  });
+  return { ...data, rows, n: rows.length, slim: true, savedAt: Date.now() };
+}
+
+function readStoredBoard(storage, uni) {
+  const raw = storage.getItem(boardCacheKey(uni));
+  if (!raw) return null;
+  const data = JSON.parse(raw);
+  if (!data || !(data.rows || []).length) {
+    storage.removeItem(boardCacheKey(uni));
+    return null;
+  }
+  if (data.savedAt && Date.now() - Number(data.savedAt) > BOARD_LOCAL_TTL_MS) {
+    storage.removeItem(boardCacheKey(uni));
+    return null;
+  }
+  return data;
+}
+
 function readBoardCache(uni) {
   const hit = state.boardCache[uni];
   if (hit && (hit.rows || []).length) return hit;
   try {
-    const raw = sessionStorage.getItem(boardCacheKey(uni));
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (data && (data.rows || []).length) {
+    const data = readStoredBoard(sessionStorage, uni);
+    if (data) {
       state.boardCache[uni] = data;
       return data;
     }
-    sessionStorage.removeItem(boardCacheKey(uni));
+  } catch { /* quota / parse */ }
+  try {
+    const data = readStoredBoard(localStorage, uni);
+    if (data) {
+      state.boardCache[uni] = data;
+      return data;
+    }
   } catch { /* quota / parse */ }
   delete state.boardCache[uni];
   return null;
@@ -1073,18 +1111,72 @@ function writeBoardCache(uni, data) {
   state.boardCache[uni] = data;
   try {
     sessionStorage.setItem(boardCacheKey(uni), JSON.stringify(data));
-  } catch { /* payload may exceed quota; memory cache still hits */ }
+  } catch { /* full board may exceed quota */ }
+  try {
+    localStorage.setItem(boardCacheKey(uni), JSON.stringify(slimBoard(data)));
+  } catch { /* quota */ }
 }
 
 function prefetchBoards(except) {
-  UNIVERSE_IDS.forEach((u) => {
-    if (u === except || state.boardCache[u]) return;
+  // Large universes stay on demand. Prefetching S&P / mid / small alongside a
+  // switch saturates the Vercel function and makes the click feel stuck.
+  const queue = ["mega", "global", "nasdaq100"].filter((u) => u !== except && !state.boardCache[u]);
+  const step = () => {
+    const u = queue.shift();
+    if (!u) return;
     api("/board?universe=" + encodeURIComponent(u))
       .then((data) => {
         if ((data.rows || []).length) writeBoardCache(u, data);
       })
-      .catch(() => {});
-  });
+      .catch(() => {})
+      .finally(() => setTimeout(step, 500));
+  };
+  step();
+}
+
+function shellRows(tickers) {
+  return (tickers || []).map((t) => ({
+    ticker: t,
+    name: "",
+    sector: "",
+    rating: "",
+    pending: true,
+    score: null,
+    confidence: null,
+    price: null,
+  }));
+}
+
+function paintShell(uni, tickers) {
+  if (!tickers.length || $("universe").value !== uni) return;
+  if (readBoardCache(uni)) return;
+  const scored = (state.rows || []).some((r) => r && !r.pending && r.rating);
+  if (scored) return;
+  state.shellUni = uni;
+  paintBoard(
+    { universe: uni, n: tickers.length, rows: shellRows(tickers), counts: {}, as_of: "" },
+    uni,
+    { quiet: true, fillEmpty: false }
+  );
+}
+
+async function paintUniverseShell(uni) {
+  if (readBoardCache(uni)) return;
+  let tickers = [];
+  try {
+    const res = await fetch("/universes/" + encodeURIComponent(uni) + ".json");
+    if (res.ok) {
+      const data = await res.json();
+      tickers = data.tickers || [];
+    }
+  } catch { /* static list is optional */ }
+  if (!tickers.length) {
+    try {
+      const data = await api("/universe/" + encodeURIComponent(uni));
+      tickers = data.tickers || [];
+    } catch { return; }
+  }
+  paintShell(uni, tickers);
 }
 
 async function loadBoard({ quiet = false, fillEmpty = true } = {}) {
@@ -1092,19 +1184,55 @@ async function loadBoard({ quiet = false, fillEmpty = true } = {}) {
   localStorage.setItem("desk_universe", uni);
   const cached = readBoardCache(uni);
   if (cached) paintBoard(cached, uni, { quiet: true, fillEmpty: false });
-  else if (!quiet) skeletonCards($("board-list"), 6);
+  else if (!quiet && state.shellUni !== uni) skeletonCards($("board-list"), 6);
+  const shellPromise = cached ? null : paintUniverseShell(uni);
   if (state.boardAbort) state.boardAbort.abort();
   const ac = new AbortController();
   state.boardAbort = ac;
   try {
     const data = await api("/board?universe=" + encodeURIComponent(uni), { signal: ac.signal });
+    if (shellPromise) await shellPromise.catch(() => {});
     if ($("universe").value !== uni) return;
-    writeBoardCache(uni, data);
-    paintBoard(data, uni, { quiet, fillEmpty });
-    if ((data.rows || []).length) prefetchBoards(uni);
+    const incoming = data.rows || [];
+    const prev = readBoardCache(uni);
+    const shellOnScreen = state.shellUni === uni && (state.rows || []).some((r) => r.pending);
+    if (!incoming.length && prev && (prev.rows || []).length) {
+      // Server has no durable board for this isolate. Keep the cached universe
+      // on screen instead of wiping it and starting a cold scan.
+      return;
+    }
+    if (!incoming.length && shellOnScreen) {
+      const job = data.job || {};
+      if (job.status === "running") {
+        updateScanStatus(job);
+        startPoll();
+        return;
+      }
+      if (fillEmpty) refreshUniverse();
+      return;
+    }
+    let next = data;
+    const scanning = data.job && data.job.status === "running";
+    const baseRows = (prev && prev.rows.length > incoming.length)
+      ? prev.rows
+      : (shellOnScreen ? state.rows : null);
+    if (baseRows && incoming.length && incoming.length < baseRows.length && (scanning || shellOnScreen)) {
+      const by = new Map(baseRows.map((r) => [r.ticker, r]));
+      incoming.forEach((row) => by.set(row.ticker, { ...(by.get(row.ticker) || {}), ...row, pending: false }));
+      next = { ...data, rows: [...by.values()], n: by.size };
+    }
+    const cacheRows = (next.rows || []).filter((r) => !r.pending);
+    if (cacheRows.length) writeBoardCache(uni, { ...next, rows: cacheRows, n: cacheRows.length });
+    if (cacheRows.length && cacheRows.length === (next.rows || []).length) state.shellUni = null;
+    paintBoard(next, uni, { quiet, fillEmpty });
+    if (cacheRows.length) prefetchBoards(uni);
   } catch (err) {
     if (err && err.name === "AbortError") return;
-    if (cached) return;
+    if (shellPromise) await shellPromise.catch(() => {});
+    if (cached || (state.shellUni === uni && (state.rows || []).length)) {
+      if (!quiet) toast("Names are up. Scores will follow — " + err.message, "err", 5000);
+      return;
+    }
     throw err;
   }
 }
@@ -1187,6 +1315,8 @@ function updateScanStatus(job) {
 function startPoll() {
   if (state.poll) return;
   state.poll = setInterval(async () => {
+    if (state.pollBusy) return;
+    state.pollBusy = true;
     try {
       const uni = $("universe").value;
       const job = await api("/board/refresh", {
@@ -1206,6 +1336,8 @@ function startPoll() {
       if (err && err.name === "AbortError") return;
       await loadBoard({ quiet: true, fillEmpty: false }).catch(() => {});
       if ($("scan-status")) $("scan-status").textContent = "Scan still running — retrying…";
+    } finally {
+      state.pollBusy = false;
     }
   }, 2000);
 }
@@ -1427,7 +1559,7 @@ function renderDive(res) {
     </div>
     ${res.equity && res.equity.length
       ? `<div class="chart-box dive-equity">
-          <div class="chart-title"><span>Walk-forward equity</span><span class="hint-inline">Long when calibrated P(up) ≥ 55% · weak calls shrunk when the meta-label disagrees · dashed = buy &amp; hold</span></div>
+          <div class="chart-title"><span>Walk-forward equity</span><span class="hint-inline">Signal at the close, filled at the next open · 12 bps per side · long when P(up) ≥ 55% · dashed = buy &amp; hold</span></div>
           <div class="chart-canvas"><canvas id="eq-chart"></canvas></div>
         </div>`
       : '<p class="hint">Not enough history for a walk-forward equity curve.</p>'}
@@ -2134,15 +2266,21 @@ function renderHoldings(s, years) {
 function renderPortfolios(data) {
   killCharts();
   const el = $("port-list");
-  const sleeves = data.sleeves || [];
   const years = Number(data.years || 1);
   const hurdle = spyAnn(data);
+  const sleeves = (data.sleeves || []).filter((s) => sleeveBeatsSpy(s, hurdle) && Number(s.n || (s.holdings || []).length) > 0);
   const vs = $("port-vs-spy");
   if (!sleeves.length) {
     $("port-empty").hidden = false;
+    $("port-empty").textContent = `No ${years}-year sleeve in this universe is expected to outrun the S&P 500’s 11.5%/yr, so none are listed.`;
     $("port-summary").innerHTML = "";
     $("port-chart-wrap").hidden = true;
-    if (vs) { vs.hidden = true; vs.innerHTML = ""; }
+    if (vs) {
+      vs.hidden = false;
+      vs.classList.add("lags");
+      vs.innerHTML = `<span class="port-vs-kicker lags">None modeled above the S&amp;P 500</span>
+        <p>Every sleeve’s expected annualized return is at or below the S&amp;P’s <b>11.5%/yr</b> long-run hurdle on this universe and horizon.</p>`;
+    }
     el.innerHTML = "";
     return;
   }
@@ -2234,28 +2372,62 @@ function renderPortfolios(data) {
   });
 }
 
+function portCacheKey(uni, years) {
+  return String(uni || "global").toLowerCase() + "|" + Number(years || 1);
+}
+
+function readPortCache(uni, years) {
+  const key = portCacheKey(uni, years);
+  if (state.portCache[key]) return state.portCache[key];
+  try {
+    const raw = sessionStorage.getItem("desk_port_" + key);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && Array.isArray(data.sleeves)) {
+      state.portCache[key] = data;
+      return data;
+    }
+  } catch { /* quota / parse */ }
+  return null;
+}
+
+function writePortCache(uni, years, data) {
+  const key = portCacheKey(uni, years);
+  state.portCache[key] = data;
+  try {
+    sessionStorage.setItem("desk_port_" + key, JSON.stringify(data));
+  } catch { /* quota */ }
+}
+
 async function loadPortfolios(refresh = false) {
   const uni = $("universe").value;
   const years = portYears();
   setPortYears(years);
-  $("port-empty").hidden = false;
-  $("port-empty").textContent = refresh
-    ? `Rebuilding ${years}-year sleeves from the board and fundamentals…`
-    : `Loading ${years}-year model portfolios…`;
-  $("port-list").innerHTML = "";
-  $("port-summary").innerHTML = "";
-  if ($("port-vs-spy")) { $("port-vs-spy").hidden = true; $("port-vs-spy").innerHTML = ""; }
-  $("port-chart-wrap").hidden = true;
-  $("resolve-hint").textContent = `Scoring ${years}-year expected return and confidence…`;
+  const cached = refresh ? null : readPortCache(uni, years);
+  if (cached) {
+    renderPortfolios(cached);
+  } else {
+    $("port-empty").hidden = false;
+    $("port-empty").textContent = refresh
+      ? `Rebuilding ${years}-year sleeves that outrun the S&P 500…`
+      : `Loading ${years}-year portfolios that outrun the S&P 500…`;
+    $("port-list").innerHTML = "";
+    $("port-summary").innerHTML = "";
+    if ($("port-vs-spy")) { $("port-vs-spy").hidden = true; $("port-vs-spy").innerHTML = ""; }
+    $("port-chart-wrap").hidden = true;
+    skeletonCards($("port-list"), 2);
+  }
+  $("resolve-hint").textContent = `Scoring ${years}-year expected return versus the S&P 500…`;
   setBusy("port-load", true);
-  skeletonCards($("port-list"), 2);
   try {
     const q = "/portfolios?universe=" + encodeURIComponent(uni) + "&years=" + years + (refresh ? "&refresh=true" : "");
     const data = await api(q);
+    if ($("universe").value !== uni || portYears() !== years) return;
+    writePortCache(uni, years, data);
     renderPortfolios(data);
-    $("port-status").textContent = `${years}-year horizon · ${data.n_candidates || 0} names scored from ${UNIVERSE_LABEL[data.universe] || data.universe || uni} · ${data.as_of || ""}`;
+    const listed = (data.beats_spy || []).length || (data.sleeves || []).filter((s) => sleeveBeatsSpy(s, spyAnn(data))).length;
+    $("port-status").textContent = `${years}-year horizon · ${listed} sleeve${listed === 1 ? "" : "s"} above the S&P · ${data.n_candidates || 0} names scored from ${UNIVERSE_LABEL[data.universe] || data.universe || uni} · ${data.as_of || ""}`;
     $("resolve-hint").textContent = data.as_of || "";
-    $("port-empty").hidden = !!(data.sleeves || []).length;
   } catch (err) {
     $("port-list").innerHTML = "";
     $("port-empty").textContent = err.message;
@@ -2413,7 +2585,7 @@ function bindUi() {
   if ($("port-universe")) {
     $("port-universe").addEventListener("change", () => {
       setPortUniverse($("port-universe").value);
-      if (state.view === "portfolios") loadPortfolios(true);
+      if (state.view === "portfolios") loadPortfolios(false);
     });
   }
   $("universe").addEventListener("change", () => {
@@ -2459,20 +2631,16 @@ async function boot() {
   bindShortcuts();
   renderRecents();
   $("board-empty").hidden = true;
-  skeletonCards($("board-list"), 8);
   const saved = localStorage.getItem("desk_universe");
   if (saved && $("universe").querySelector(`option[value="${saved}"]`)) {
     $("universe").value = saved;
-  } else {
-    try {
-      const last = await api("/board");
-      if (last.universe && $("universe").querySelector(`option[value="${last.universe}"]`)) {
-        $("universe").value = last.universe;
-      }
-    } catch { /* keep default */ }
   }
   syncPortUniverse();
-  await loadBoard().catch((err) => {
+  const uni = $("universe").value;
+  if (!readBoardCache(uni)) skeletonCards($("board-list"), 8);
+  paintUniverseShell(uni);
+  loadBoard().catch((err) => {
+    if (state.shellUni === uni && (state.rows || []).length) return;
     $("board-list").innerHTML = "";
     $("board-empty").textContent = "Could not reach FastAPI at " + API + " — " + err.message;
     $("board-empty").hidden = false;

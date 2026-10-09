@@ -5,35 +5,29 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request, send_file
 from werkzeug.exceptions import HTTPException
 
 ROOT = Path(__file__).resolve().parent
+PUBLIC = ROOT.parent / "public"
+INDEX = PUBLIC / "index.html"
 API_URL = os.getenv("API_URL", "").strip().rstrip("/")
 if not API_URL:
     API_URL = "/api" if os.getenv("VERCEL") else "http://127.0.0.1:8000"
-ASSET_V = "20260928b"
 
 app = Flask(
     __name__,
-    template_folder=str(ROOT / "templates"),
-    static_folder=str(ROOT / "static"),
+    static_folder=str(PUBLIC / "static"),
+    static_url_path="/static",
 )
 app.config["API_URL"] = API_URL
-app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 
-def _desk(page: str, ticker: str = "", period: str = "5y", horizon: str = "5"):
-    return render_template(
-        "desk.html",
-        api_url=API_URL,
-        page=page,
-        ticker=ticker,
-        period=period,
-        horizon=horizon,
-        asset_v=ASSET_V,
-    )
+def _desk(page: str = "", ticker: str = "", period: str = "5y", horizon: str = "5"):
+    # The shell is a static file. The page, ticker, and API base come from the URL.
+    del page, ticker, period, horizon
+    return send_file(INDEX)
 
 
 @app.route("/")

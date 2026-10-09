@@ -8,16 +8,39 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Equities Desk</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ asset_v }}" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v=20261009c" />
 </head>
-<body
-  data-api="{{ api_url }}"
-  data-page="{{ page }}"
-  data-ticker="{{ ticker }}"
-  data-period="{{ period }}"
-  data-horizon="{{ horizon }}"
->
+<body data-api="" data-page="" data-ticker="" data-period="5y" data-horizon="5">
+<script>
+(function () {
+  var b = document.body;
+  var path = location.pathname.replace(/\/+$/, "") || "/";
+  var q = new URLSearchParams(location.search);
+  b.dataset.api = location.port === "5050" ? "http://127.0.0.1:8000" : "/api";
+  var page = "home";
+  var ticker = "";
+  if (path.indexOf("/ticker/") === 0) {
+    page = "ticker";
+    ticker = decodeURIComponent(path.slice("/ticker/".length));
+  } else if (path === "/financials" || path.indexOf("/financials/") === 0) {
+    page = "financials";
+    ticker = decodeURIComponent(path.slice("/financials/".length));
+    if (!ticker) ticker = q.get("ticker") || "";
+  } else if (path === "/options") {
+    page = "options";
+    ticker = q.get("ticker") || "";
+  } else if (path === "/volume") {
+    page = "volume";
+    ticker = q.get("ticker") || "";
+  } else if (path === "/portfolios") {
+    page = "portfolios";
+  }
+  b.dataset.page = page;
+  b.dataset.ticker = ticker;
+  if (q.get("period")) b.dataset.period = q.get("period");
+  if (q.get("horizon")) b.dataset.horizon = q.get("horizon");
+})();
+</script>
   <header class="top">
     <div class="top-left">
       <a class="home-btn" id="home-btn" href="/">Home</a>
@@ -227,7 +250,7 @@
     <div class="port-head">
       <div>
         <h2 class="port-title">Model portfolios</h2>
-        <p class="hint" id="port-status">Pick a horizon. Sleeves with expected return above the S&amp;P 500’s 11.5%/yr are flagged as outrunning the index. Each card lists the full stock allocation.</p>
+        <p class="hint" id="port-status">Pick a horizon. Only sleeves expected to outrun the S&amp;P 500’s 11.5%/yr are listed.</p>
       </div>
       <div class="port-controls">
         <label class="port-pick">Universe
@@ -250,7 +273,7 @@
       </div>
     </div>
     <div id="port-vs-spy" class="port-vs-spy" hidden></div>
-    <div id="port-empty" class="empty">Open Portfolios and pick a horizon. Sleeves are built from the current universe board plus fundamentals and long-run history.</div>
+    <div id="port-empty" class="empty">Open Portfolios and pick a horizon. Only sleeves expected to outrun the S&amp;P 500’s 11.5%/yr are listed.</div>
     <div id="port-summary" class="port-summary"></div>
     <div id="port-chart-wrap" class="chart-box port-chart" hidden>
       <div class="chart-title"><span>Growth of $10,000 · expected path per sleeve</span><span class="hint" id="port-chart-sub"></span></div>
@@ -293,6 +316,7 @@
     </div>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_v }}"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js?v=20261009c"></script>
 </body>
 </html>

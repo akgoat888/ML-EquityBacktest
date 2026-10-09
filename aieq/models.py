@@ -270,6 +270,76 @@ def _safe_auc(y_true: np.ndarray, p: np.ndarray) -> float:
         return float("nan")
 
 
+def _causal_p_up(
+    p_xgb: np.ndarray,
+    p_logit: np.ndarray,
+    y: np.ndarray,
+    meta_X: np.ndarray | None,
+) -> np.ndarray:
+    """Walk-forward probabilities with no same-bar or future labels in the blend.
+
+    The early out-of-sample slice is the raw model. Blend weight, Platt scaling,
+    and the meta shrink are fit only on that past slice and applied only after it.
+    """
+    p_xgb = np.clip(np.asarray(p_xgb, dtype=float), 1e-4, 1.0 - 1e-4)
+    p_trade = np.array(p_xgb, copy=True)
+    n = len(p_trade)
+    split = int(n * 0.7)
+    if split < 50 or n - split < 25 or len(np.unique(y[:split])) < 2:
+        return p_trade
+
+    logit = np.asarray(p_logit, dtype=float)
+    if np.isfinite(logit[:split]).mean() > 0.8:
+        logit = np.clip(np.where(np.isfinite(logit), logit, p_xgb), 1e-4, 1.0 - 1e-4)
+        blend_w = _blend_weights(y[:split], p_xgb[:split], logit[:split])
+        p_past = blend_w * p_xgb[:split] + (1.0 - blend_w) * logit[:split]
+        p_future = blend_w * p_xgb[split:] + (1.0 - blend_w) * logit[split:]
+    else:
+        p_past = p_xgb[:split]
+        p_future = p_xgb[split:].copy()
+
+    inner = int(split * 0.7)
+    p_future_out = np.array(p_future, copy=True)
+    if inner >= 40 and split - inner >= 20 and len(np.unique(y[:inner])) >= 2:
+        inner_w = _fit_platt(p_past[:inner], y[:inner])
+        if inner_w is not None:
+            raw_b = _brier(y[inner:split], p_past[inner:split])
+            cal_b = _brier(y[inner:split], _apply_platt(p_past[inner:split], inner_w))
+            if np.isfinite(cal_b) and cal_b < raw_b - 0.001:
+                frozen = _fit_platt(p_past, y[:split])
+                if frozen is not None:
+                    p_future_out = _apply_platt(p_future, frozen)
+
+    if meta_X is not None and inner >= 40 and split - inner >= 20:
+        correct = ((p_past >= 0.5).astype(int) == np.asarray(y[:split]).astype(int)).astype(float)
+        if len(np.unique(correct[:inner])) >= 2:
+            try:
+                hold_meta = _fit_classifier(
+                    _named_frame(meta_X[:inner]),
+                    pd.Series(correct[:inner]),
+                    max_depth=2,
+                    num_boost_round=80,
+                    min_child_weight=10,
+                )
+                hold_p = _predict(hold_meta, _named_frame(meta_X[inner:split]))
+                hold_acc = float(((hold_p >= 0.5).astype(int) == correct[inner:split].astype(int)).mean())
+                if hold_acc >= 0.53:
+                    meta_model = _fit_classifier(
+                        _named_frame(meta_X[:split]),
+                        pd.Series(correct),
+                        max_depth=2,
+                        num_boost_round=80,
+                        min_child_weight=10,
+                    )
+                    meta_future = _predict(meta_model, _named_frame(meta_X[split:]))
+                    p_future_out = _shrink_toward_half(p_future_out, meta_future)
+            except Exception:
+                pass
+
+    p_trade[split:] = np.clip(p_future_out, 1e-4, 1.0 - 1e-4)
+    return p_trade
+
+
 def walk_forward(
     X: pd.DataFrame,
     y_cls: pd.Series,
@@ -407,9 +477,13 @@ def walk_forward(
             except Exception:
                 meta_model = None
 
+        # Live calibration above may use the whole finished sample. The curve does not:
+        # each traded probability is fixed before that bar's label, and before every later label.
+        meta_X = _meta_matrix(X.reindex(oos.index), p_xgb, oos["exp_ret"].to_numpy(dtype=float))
+        p_trade = _causal_p_up(p_xgb, p_logit, y, meta_X)
         oos = oos.copy()
-        oos["p_up"] = p_adj
-        p = np.asarray(p_adj, dtype=float)
+        oos["p_up"] = p_trade
+        p = np.asarray(p_trade, dtype=float)
         pred = (p >= 0.5).astype(int)
         metrics["oos_accuracy"] = float(_accuracy_score(y, pred))
         metrics["oos_auc"] = _safe_auc(y, p)

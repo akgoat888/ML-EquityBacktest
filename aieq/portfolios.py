@@ -315,8 +315,75 @@ def _components(r: dict[str, Any], h: int) -> dict[str, float]:
     return comp
 
 
+def _expected_long(r: dict[str, Any], h: int) -> tuple[float, float, dict[str, float]]:
+    """10-year expected return that can clear the S&P hurdle.
+
+    The shorter-horizon blend shrinks everything toward a 7% prior. At 10 years
+    that prior sits under the 11.5% S&P hurdle, so every sleeve was flagged as
+    trailing. Here the base is persisted excess long-run CAGR versus the index,
+    plus a small fundamental tilt. Laggards stay below the hurdle; compounders
+    that have actually outrun the index stay above it.
+    """
+    if r.get("ballast"):
+        ann = SPY_ANN if r.get("ticker") == "SPY" else BALLAST_PRIOR.get(r.get("ticker"), MARKET_PRIOR)
+        return float(ann), 0.8, {"cagr": round(float(ann), 4)}
+
+    years = float(r.get("years_hist") or 0)
+    c_hist: float | None = None
+    persist = 0.0
+    if r.get("cagr_10y") is not None and years >= 8:
+        c_hist = float(r["cagr_10y"])
+        persist = 0.62
+    elif r.get("cagr_5y") is not None and years >= 4.5:
+        c_hist = float(r["cagr_5y"])
+        persist = 0.48
+    if c_hist is None:
+        # Not enough history to claim a decade of outperformance.
+        ann = MARKET_PRIOR + float(r.get("div_yield") or 0.0) * 0.5
+        return ann, 0.2, {"cagr": round(ann, 4)}
+
+    base = SPY_ANN + (_clip(c_hist, -0.05, 0.40) - SPY_ANN) * persist
+    tilt = 0.0
+    g_parts = [x for x in (r.get("rev_growth"), r.get("earn_growth")) if x is not None]
+    if g_parts:
+        rev = r.get("rev_growth")
+        earn = r.get("earn_growth")
+        if rev is not None and earn is not None:
+            g = 0.6 * _clip(float(rev), -0.3, 0.6) + 0.4 * _clip(float(earn), -0.4, 0.6)
+        else:
+            g = _clip(float(g_parts[0]), -0.3, 0.5)
+        tilt += _clip((g - 0.08) * 0.10, -0.015, 0.02)
+    roe = r.get("roe")
+    mg = r.get("margin")
+    q = 0.0
+    if roe is not None:
+        q += _clip((float(roe) - 0.10) * 0.25, -0.02, 0.025)
+    if mg is not None:
+        q += _clip((float(mg) - 0.10) * 0.20, -0.015, 0.02)
+    tilt += _clip(q, -0.02, 0.02)
+    pe = r.get("fwd_pe")
+    if pe is not None and float(pe) > 0:
+        pe_f = float(pe)
+        if pe_f > 35:
+            tilt += -_clip((pe_f / 35.0 - 1.0) * 0.04, 0, 0.02)
+        elif pe_f < 14:
+            tilt += _clip((14.0 - pe_f) / 14.0 * 0.02, 0, 0.015)
+    tilt = _clip(tilt, -0.025, 0.025)
+    raw = base + tilt + float(r.get("div_yield") or 0.0) * 0.5
+    # Keep most of the excess vs the index. Do not pull winners back under 11.5%.
+    ann = SPY_ANN + (raw - SPY_ANN) * 0.80
+    ann = _clip(ann, -0.08, 0.28)
+    hist = _clip(years / 10.0, 0.0, 1.0)
+    vol = r.get("vol") or 0.30
+    vol_conf = _clip(1.0 - (float(vol) - 0.12) / 0.75, 0.05, 1.0)
+    conf = _clip(0.5 * hist + 0.3 * vol_conf + 0.2, 0.08, 0.92)
+    return ann, conf, {"cagr": round(base, 4), "tilt": round(tilt, 4)}
+
+
 def _expected(r: dict[str, Any], h: int) -> tuple[float, float, dict[str, float]]:
     """Return (annualised expected return, confidence 0..1, components)."""
+    if h >= 10:
+        return _expected_long(r, h)
     w = _horizon_weights(h)
     comp = _components(r, h)
     num = den = 0.0
@@ -415,7 +482,14 @@ def _tier_pool(tier: str, rows: list[dict[str, Any]], h: int) -> list[dict[str, 
     def dd(r):  # noqa: ANN001
         return r.get("max_dd_3y") if r.get("max_dd_3y") is not None else -0.4
 
-    base = [r for r in rows if not r.get("ballast") and str(r.get("rating")) != "SELL"]
+    # Only names expected to beat the S&P are eligible. A sleeve built entirely
+    # from them clears the hurdle; trailers are not listed.
+    base = [
+        r for r in rows
+        if not r.get("ballast")
+        and str(r.get("rating")) != "SELL"
+        and float(r.get("exp_ann") or 0) > SPY_ANN
+    ]
     if tier == "high":
         pool = [r for r in base if r["exp_ann"] > 0.04 and (vol(r) >= 0.32 or beta(r) >= 1.25)]
         pool.sort(key=lambda r: r["exp_ann"] * (0.6 + r["conf"]), reverse=True)
@@ -431,16 +505,20 @@ def _tier_pool(tier: str, rows: list[dict[str, Any]], h: int) -> list[dict[str, 
         pool.sort(key=lambda r: (r["exp_ann"] + 0.5 * (r.get("div_yield") or 0)) * (0.4 + r["conf"]) / max(vol(r), 0.12) ** 1.5, reverse=True)
     else:
         pool = [
-            r for r in rows
-            if str(r.get("rating")) != "SELL" and r["exp_ann"] >= -0.02
-            and (r.get("ballast") or (vol(r) < 0.26 and beta(r) <= 1.0 and dd(r) > -0.40))
+            r for r in base
+            if vol(r) < 0.26 and beta(r) <= 1.0 and dd(r) > -0.40
         ]
-        pool.sort(key=lambda r: (r["conf"] + (0.5 if r.get("ballast") else 0.0)) / max(vol(r), 0.08), reverse=True)
+        pool.sort(key=lambda r: (r["conf"]) / max(vol(r), 0.08), reverse=True)
     return pool
 
 
 def _relaxed_pool(tier: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    base = [r for r in rows if str(r.get("rating")) != "SELL" and r["exp_ann"] > -0.02]
+    base = [
+        r for r in rows
+        if not r.get("ballast")
+        and str(r.get("rating")) != "SELL"
+        and float(r.get("exp_ann") or 0) > SPY_ANN
+    ]
     if tier == "high":
         return sorted(base, key=lambda r: r["exp_ann"], reverse=True)
     if tier == "medium":
@@ -626,18 +704,32 @@ def _sleeve(tier: dict[str, Any], holdings: list[dict[str, Any]], h: int) -> dic
 
 def _cache_path(universe: str, years: int):
     safe = "".join(c if c.isalnum() else "_" for c in universe.strip().lower()) or "global"
-    return ensure_cache_dir() / f"portfolios_{safe}_{int(years)}y.json"
+    return ensure_cache_dir() / f"portfolios_v3_{safe}_{int(years)}y.json"
+
+
+def _port_key(universe: str, years: int) -> str:
+    # v3: 10y expected-return model and outperform-only sleeves. Old payloads
+    # stayed under the S&P hurdle at 10 years and must not be reused.
+    return f"v3_{universe}_{int(years)}y"
+
+
+_port_mem: dict[str, tuple[float, dict[str, Any]]] = {}
+_PORT_MEM_SEC = 300.0
 
 
 def load_portfolios(universe: str, years: int = 1) -> dict[str, Any] | None:
     from aieq.store import doc_age_hours, get_doc
 
-    key = f"{universe}_{int(years)}y"
+    key = _port_key(universe, years)
+    hit = _port_mem.get(key)
+    if hit and (time.time() - hit[0]) <= _PORT_MEM_SEC and hit[1].get("sleeves") is not None:
+        return hit[1]
     age = doc_age_hours("portfolio", key)
     if age is not None and age <= CACHE_HOURS:
         try:
             payload = get_doc("portfolio", key)
-            if isinstance(payload, dict) and payload.get("sleeves"):
+            if isinstance(payload, dict) and payload.get("sleeves") is not None:
+                _port_mem[key] = (time.time(), payload)
                 return payload
         except Exception:
             pass
@@ -647,7 +739,10 @@ def load_portfolios(universe: str, years: int = 1) -> dict[str, Any] | None:
     if (time.time() - path.stat().st_mtime) / 3600.0 > CACHE_HOURS:
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            _port_mem[key] = (time.time(), payload)
+        return payload
     except Exception:
         return None
 
@@ -703,13 +798,19 @@ def _build_sleeves(scored: list[dict[str, Any]], years: int) -> dict[str, dict[s
         picks = _diversify(pool, tier["n"], tier["max_sector"], used)
         if len(picks) < max(4, tier["n"] // 2):
             relaxed = _relaxed_pool(tid, scored)
-            picks = _diversify(relaxed, tier["n"], tier["max_sector"], used if len(relaxed) > tier["n"] * 2 else set())
-            pool = relaxed
+            alt = _diversify(relaxed, tier["n"], tier["max_sector"], used)
+            if len(alt) > len(picks):
+                picks = alt
+                pool = relaxed
         picks, swaps = _upgrade_pass(tid, picks, pool, used)
         holdings = _allocate(tid, picks, tier["cap"])
-        used.update(x["ticker"] for x in holdings)
         sleeve = _sleeve(tier, holdings, years)
         sleeve["upgrades"] = swaps
+        # Drop tiers that still trail. Callers only list sleeves above the S&P.
+        if sleeve.get("n", 0) < 3 or not sleeve.get("beats_spy"):
+            built[tid] = _sleeve(tier, [], years)
+            continue
+        used.update(x["ticker"] for x in holdings)
         built[tid] = sleeve
     return built
 
@@ -792,8 +893,20 @@ def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool =
         prev_years = HORIZONS[idx - 1] if idx > 0 else None
         prev_built = _build_sleeves(_score_names(names, prev_years), prev_years) if prev_years else None
         _horizon_switches(built, prev_built, scored, years, prev_years)
-        sleeves = [built[t["id"]] for t in TIERS]
-        beaters = [s["label"] for s in sleeves if s.get("beats_spy")]
+        sleeves = [built[t["id"]] for t in TIERS if built[t["id"]].get("n") and built[t["id"]].get("beats_spy")]
+        beaters = [s["label"] for s in sleeves]
+        if sleeves:
+            note = (
+                f"Only sleeves expected to outrun the S&P 500's {SPY_ANN:.1%}/yr hurdle are listed. "
+                f"{years}-year figures blend street targets, fundamental growth, quality, valuation, "
+                "realised CAGR and the desk rating. At 10 years the estimate follows persisted excess "
+                "long-run CAGR versus the index. Not a forecast or advice."
+            )
+        else:
+            note = (
+                f"No {years}-year sleeve in this universe is expected to outrun the S&P 500's "
+                f"{SPY_ANN:.1%}/yr hurdle, so none are listed."
+            )
         payload = {
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             "universe": universe,
@@ -802,19 +915,13 @@ def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool =
             "n_candidates": len(scored),
             "spy_ann": SPY_ANN,
             "beats_spy": beaters,
-            "note": (
-                f"{years}-year figures are model estimates blending street targets, fundamental growth, "
-                "quality, valuation, realised CAGR, momentum and the desk rating — weights shift toward "
-                "fundamentals as the horizon lengthens. Sleeves with expected annualised return above "
-                f"the S&P 500's {SPY_ANN:.1%} long-run hurdle are flagged as outrunning the index. "
-                "Confidence reflects data completeness, signal agreement, volatility and history depth. "
-                "Not a forecast or advice."
-            ),
+            "note": note,
             "sleeves": sleeves,
         }
         from aieq.store import put_doc
 
-        put_doc("portfolio", f"{universe}_{int(years)}y", payload)
+        _port_mem[_port_key(universe, years)] = (time.time(), payload)
+        put_doc("portfolio", _port_key(universe, years), payload)
         try:
             _cache_path(universe, years).write_text(json.dumps(payload, default=str), encoding="utf-8")
         except OSError:

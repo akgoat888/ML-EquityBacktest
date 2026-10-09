@@ -73,6 +73,8 @@ a { color: var(--link); }
 .flag-call, .flag-buy { color: var(--high); font-weight: 650; }
 .flag-put, .flag-sell { color: var(--sell); font-weight: 650; }
 .flag-unknown { color: var(--muted); font-weight: 500; }
+.rating-pending { color: var(--muted); font-weight: 600; }
+.name-card.is-pending { opacity: .72; }
 .HIGHBUY, .rating-HIGHBUY { color: var(--high); }
 .BUY, .rating-BUY { color: var(--buy); }
 .HOLD, .rating-HOLD { color: var(--hold); }

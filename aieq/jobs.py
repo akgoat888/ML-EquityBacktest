@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 _lock = threading.Lock()
-_JOB_PUBLIC = ("status", "progress", "total", "universe", "error", "as_of", "n", "deep", "next_cursor")
+_JOB_PUBLIC = ("status", "progress", "total", "universe", "error", "as_of", "n", "deep", "next_cursor", "primed")
+_advance_lock = threading.Lock()
 _SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("LAMBDA_TASK_ROOT"))
 _BATCH = 5 if _SERVERLESS else 20
 
@@ -147,36 +148,82 @@ def _start_or_advance_board(
     max_workers: int,
     cursor: int | None = None,
 ) -> dict[str, Any]:
+    """On Vercel, the first call only publishes the universe (from the snapshot).
+
+    Scoring a batch inside that same request is what made changing universe feel
+    stuck. The poll scores the next slice.
+    """
     from aieq.universe import universe_tickers
 
-    tickers = universe_tickers(universe)
-    nxt = 0 if cursor is None else max(0, int(cursor))
-    if cursor is None:
-        job = _load_board_job()
-        same = (
-            job.get("status") == "running"
-            and job.get("universe") == universe
-            and bool(job.get("deep")) == deep
-        )
-        if same:
-            nxt = int(job.get("next_i") or job.get("progress") or 0)
+    existing = _load_board_job()
+    same_running = (
+        existing.get("status") == "running"
+        and existing.get("universe") == universe
+        and bool(existing.get("deep")) == bool(deep)
+    )
+    requested = 0 if cursor is None else max(0, int(cursor))
+    if cursor is None and same_running:
+        requested = int(existing.get("next_i") or existing.get("progress") or 0)
+
+    # cursor 0 starts over, unless this is the poll that follows a prime
+    # (membership already published, first batch not scored yet).
+    resume_primed = (
+        same_running
+        and existing.get("primed")
+        and int(existing.get("next_i") or 0) == 0
+        and requested == 0
+        and cursor is not None
+    )
+    if requested == 0 and not resume_primed:
+        tickers = universe_tickers(universe)
+        job = {
+            "status": "running",
+            "progress": 0,
+            "total": len(tickers),
+            "universe": universe,
+            "error": None,
+            "as_of": None,
+            "n": 0,
+            "deep": deep,
+            "tickers": tickers,
+            "next_i": 0,
+            "next_cursor": 0,
+            "primed": True,
+        }
+        _persist_board_job(job)
+        return _public(job)
+
+    tickers = list(existing.get("tickers") or []) if same_running else []
+    if not tickers:
+        tickers = universe_tickers(universe)
     job = {
         "status": "running",
-        "progress": nxt,
+        "progress": requested,
         "total": len(tickers),
         "universe": universe,
         "error": None,
-        "as_of": None,
-        "n": 0,
+        "as_of": existing.get("as_of"),
+        "n": int(existing.get("n") or 0) if same_running else 0,
         "deep": deep,
         "tickers": tickers,
-        "next_i": nxt,
-        "next_cursor": nxt,
+        "next_i": requested,
+        "next_cursor": requested,
+        "primed": True,
     }
     return _advance_board(job, max_workers)
 
 
 def _advance_board(job: dict[str, Any], max_workers: int) -> dict[str, Any]:
+    if not _advance_lock.acquire(blocking=False):
+        current = _load_board_job()
+        return _public(current if current.get("status") else job)
+    try:
+        return _advance_board_locked(job, max_workers)
+    finally:
+        _advance_lock.release()
+
+
+def _advance_board_locked(job: dict[str, Any], max_workers: int) -> dict[str, Any]:
     from aieq.pipeline import score_board_batch
 
     tickers = list(job.get("tickers") or [])

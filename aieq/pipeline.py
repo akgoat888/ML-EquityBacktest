@@ -176,6 +176,7 @@ def analyze(
             wf.oos["p_up"],
             settings,
             long_only=True,
+            open_=ohlcv["open"].reindex(wf.oos.index) if "open" in ohlcv.columns else None,
         )
 
     oos_sharpe = float(bt.metrics.get("sharpe") or 0.0)

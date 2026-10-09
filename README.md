@@ -55,7 +55,7 @@ export DATABASE_URL=postgresql://user:pass@host/neondb?sslmode=require
 
 ## Deploy on Vercel
 
-The UI and API run as one FastAPI function (`asgi.py`). Universe scans must finish within the function timeout (up to 300s on Hobby), so prefer **mega** rather than S&P 500. Set `DATABASE_URL` in the Vercel project env or boards reset on every cold start.
+The page shell, CSS, and JS are static files in `public/`, so the first paint does not boot Python. `/api` is the FastAPI function (`asgi.py`) and loads the model stack on the first API call. Universe scans must finish within the function timeout (up to 300s on Hobby), so prefer **mega** rather than S&P 500. Set `DATABASE_URL` in the Vercel project env or boards reset on every cold start.
 
 Linux deploys install `xgboost-cpu` so the function stays under the 500 MB Python bundle limit (the default `xgboost` wheel pulls CUDA). If a build still exceeds 500 MB, add `VERCEL_SUPPORT_LARGE_FUNCTIONS=1` in Vercel → Project → Settings → Environment Variables and redeploy.
 
@@ -70,7 +70,8 @@ Add `DATABASE_URL` in Vercel → Project → Settings → Environment Variables,
 ```
 app.py              launches FastAPI + Flask
 aieq/api.py         FastAPI routes
-web/                Flask templates + static
+public/             static page, CSS, JS, universe lists
+web/                Flask routes (local and fallback)
 cli.py              terminal desk
 aieq/
   symbols.py        TSMC → TSM, Yahoo search

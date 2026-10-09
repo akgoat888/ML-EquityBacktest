@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -56,6 +56,16 @@ def health() -> dict[str, str]:
 
     ensure_schema()
     return {"status": "ok", "store": backend_name()}
+
+
+@app.get("/universe/{name}")
+def universe_members(name: str, response: Response) -> dict[str, Any]:
+    """Membership only. Snapshots make this return before any quote is fetched."""
+    tickers = universe_tickers(name)
+    response.headers["Cache-Control"] = (
+        "public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800"
+    )
+    return {"id": name, "n": len(tickers), "tickers": tickers}
 
 
 @app.get("/universes")
@@ -124,13 +134,20 @@ def analyze_get(
 
 
 @app.get("/board")
-def board(universe: str | None = Query(default=None)) -> dict[str, Any]:
+def board(response: Response, universe: str | None = Query(default=None)) -> dict[str, Any]:
     df, as_of, uni = load_board(universe)
     rows = df.to_dict(orient="records") if df is not None and not df.empty else []
     counts = dict(Counter(str(r.get("rating") or "") for r in rows)) if rows else {}
     session = board_market_session(rows)
     last_sess = last_completed_session().strftime("%Y-%m-%d")
     stale = bool(session and session < last_sess)
+    job = get_state()
+    scanning_this = job.get("status") == "running" and (not universe or job.get("universe") == (uni or universe))
+    # Edge-cache a finished board. A scan in progress must not be frozen at the CDN.
+    if rows and not scanning_this:
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=300, stale-while-revalidate=3600"
+    else:
+        response.headers["Cache-Control"] = "no-store"
     return {
         "as_of": as_of,
         "session": session,
@@ -140,7 +157,7 @@ def board(universe: str | None = Query(default=None)) -> dict[str, Any]:
         "universe": uni or universe,
         "counts": counts,
         "rows": rows,
-        "job": get_state(),
+        "job": job,
     }
 
 
@@ -264,6 +281,7 @@ def volume_refresh(body: ScanIn | None = None) -> dict[str, Any]:
 
 @app.get("/portfolios")
 def portfolios(
+    response: Response,
     universe: str = Query(default="global"),
     years: int = Query(default=1, ge=1, le=10),
     refresh: bool = Query(default=False),
@@ -271,12 +289,16 @@ def portfolios(
     from aieq.portfolios import suggest_portfolios
 
     try:
-        return suggest_portfolios(universe=universe, years=years, refresh=refresh)
+        payload = suggest_portfolios(universe=universe, years=years, refresh=refresh)
     except Exception:
         from aieq.portfolios import _empty_portfolios, load_portfolios
 
-        cached = load_portfolios(universe, years)
-        return cached or _empty_portfolios(universe, years)
+        payload = load_portfolios(universe, years) or _empty_portfolios(universe, years)
+    if refresh:
+        response.headers["Cache-Control"] = "no-store"
+    elif payload.get("sleeves") is not None:
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=600, stale-while-revalidate=86400"
+    return payload
 
 
 @app.get("/financials")

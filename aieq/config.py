@@ -106,8 +106,13 @@ class Settings:
     fred_key: str = field(default_factory=lambda: os.getenv("FRED_API_KEY", ""))
 
     @property
-    def round_trip_cost(self) -> float:
+    def one_way_cost(self) -> float:
+        """Commission plus slippage, charged on each unit of turnover (entry and exit separately)."""
         return (self.cost_bps + self.slippage_bps) / 10_000.0
+
+    @property
+    def round_trip_cost(self) -> float:
+        return self.one_way_cost
 
 
 DEFAULT = Settings()
