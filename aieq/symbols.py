@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yfinance as yf
 
+from aieq.memcache import get_mem, put_mem
 from aieq.yahoo import gated, yf_ticker
+
+_SUFFIXES = (".TW", ".KS", ".T", ".HK", ".L", ".PA", ".DE", ".SW", ".AX", ".TO", ".SA", ".MX")
+_TICKER = re.compile(r"^[A-Za-z]{1,5}(?:[.\-][A-Za-z]{1,2})?$")
+_LISTED = re.compile(r"^[A-Za-z0-9]{1,6}\.(?:TW|KS|T|HK|L|PA|DE|SW|AX|TO|SA|MX)$", re.I)
 
 # Common names / local tickers -> Yahoo symbols that actually have history.
 ALIASES: dict[str, str] = {
@@ -65,12 +71,18 @@ def _has_history(symbol: str, min_bars: int = 30) -> bool:
 
 
 def _search_yahoo(query: str) -> list[dict[str, Any]]:
+    key = "ysearch:" + str(query or "").strip().lower()
+    hit = get_mem(key, 6 * 3600)
+    if isinstance(hit, list):
+        return hit
     try:
         result = gated(lambda: yf.Search(query, max_results=12))
-        quotes = getattr(result, "quotes", None) or []
-        return list(quotes)
+        quotes = list(getattr(result, "quotes", None) or [])
     except Exception:
         return []
+    if quotes:
+        put_mem(key, quotes)
+    return quotes
 
 
 def _rank_quote(q: dict[str, Any]) -> tuple[int, float]:
@@ -90,11 +102,44 @@ def _rank_quote(q: dict[str, Any]) -> tuple[int, float]:
     return (tier, -score)
 
 
+def _remember(query: str, found: tuple[str | None, list[str]]) -> tuple[str | None, list[str]]:
+    if found[0]:
+        put_mem("resolve:" + query.strip().upper(), found)
+    return found
+
+
+def _fast_symbol(raw: str) -> str | None:
+    """Trust a ticker-shaped query. Company names still go through search."""
+    compact = re.sub(r"\s+", "", raw)
+    if not compact or " " in raw.strip():
+        return None
+    key = compact.upper()
+    alias = ALIASES.get(raw.upper()) or ALIASES.get(key)
+    if alias:
+        return alias
+    # "Apple" is a name. "AAPL" and "nvda" are tickers.
+    if compact != compact.upper() and compact != compact.lower():
+        return None
+    if _LISTED.match(compact):
+        return key
+    if not _TICKER.match(compact):
+        return None
+    if "." in key and not any(key.endswith(s) for s in _SUFFIXES):
+        return key.replace(".", "-")
+    return key
+
+
 def resolve_symbol(query: str) -> tuple[str | None, list[str]]:
     """Map a user ticker or company name to a Yahoo symbol with real history."""
     raw = (query or "").strip()
     if not raw:
         return None, []
+    cached = get_mem("resolve:" + raw.upper(), 24 * 3600)
+    if isinstance(cached, tuple) and cached and cached[0]:
+        return cached
+    fast = _fast_symbol(raw)
+    if fast:
+        return _remember(raw, (fast, [fast]))
     tried: list[str] = []
     key = raw.upper().replace(" ", "")
 
@@ -123,7 +168,7 @@ def resolve_symbol(query: str) -> tuple[str | None, list[str]]:
     for sym in ordered:
         tried.append(sym)
         if _has_history(sym):
-            return sym, tried
+            return _remember(raw, (sym, tried))
 
     search_q = ALIASES.get(raw.upper(), raw)
     if search_q in {"TSMC", "TSM"}:
@@ -140,6 +185,6 @@ def resolve_symbol(query: str) -> tuple[str | None, list[str]]:
         seen.add(sym)
         tried.append(sym)
         if _has_history(sym, min_bars=20):
-            return sym, tried
+            return _remember(raw, (sym, tried))
 
     return None, tried

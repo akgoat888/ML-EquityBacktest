@@ -293,7 +293,7 @@ function sma(values, window) {
 async function api(path, opts = {}) {
   const urls = [API + path];
   const base = path.split("?")[0];
-  if (/^\/(financials|options|volume|portfolios|etfs|quote|search)/.test(base)) {
+  if (/^\/(financials|options|volume|portfolios|etfs|quote|search|analyze)/.test(base)) {
     urls.push(window.location.origin + "/api" + path);
   }
   let lastErr = new Error("Request failed");
@@ -375,19 +375,64 @@ function renderQuote(q) {
   });
 }
 
-async function showQuote(ticker) {
-  const t = cleanTicker(ticker);
-  if (!t) return;
-  state.quoteTicker = t;
-  startQuotePoll();
+const lookupMem = new Map();
+const quoteWait = new Map();
+
+function lookupKey(kind, parts) {
+  return "desk_" + kind + "_" + parts.map((p) => String(p || "")).join("|");
+}
+
+function readLookup(key, ttlMs) {
+  const mem = lookupMem.get(key);
+  if (mem && Date.now() - mem.at < ttlMs) return mem.body;
   try {
-    const q = await api("/quote?ticker=" + encodeURIComponent(t));
-    if (q && q.ticker) state.quoteTicker = q.ticker;
-    renderQuote(q);
-    return q;
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || data.body == null || Date.now() - Number(data.at || 0) > ttlMs) {
+      sessionStorage.removeItem(key);
+      return null;
+    }
+    lookupMem.set(key, data);
+    return data.body;
   } catch {
     return null;
   }
+}
+
+function writeLookup(key, body) {
+  const data = { at: Date.now(), body };
+  lookupMem.set(key, data);
+  try { sessionStorage.setItem(key, JSON.stringify(data)); } catch { /* quota */ }
+}
+
+async function showQuote(ticker) {
+  const t = cleanTicker(ticker);
+  if (!t) return;
+  const key = lookupKey("quote", [t]);
+  const cached = readLookup(key, 20000);
+  if (cached) {
+    state.quoteTicker = cached.ticker || t;
+    renderQuote(cached);
+    startQuotePoll();
+    return cached;
+  }
+  if (quoteWait.has(t)) return quoteWait.get(t);
+  const job = (async () => {
+    state.quoteTicker = t;
+    startQuotePoll();
+    try {
+      const q = await api("/quote?ticker=" + encodeURIComponent(t));
+      if (q && q.price != null) writeLookup(key, q);
+      if (q && q.ticker) state.quoteTicker = q.ticker;
+      renderQuote(q);
+      return q;
+    } catch {
+      return null;
+    }
+  })();
+  quoteWait.set(t, job);
+  try { return await job; } finally { quoteWait.delete(t); }
 }
 
 function startQuotePoll() {
@@ -783,12 +828,20 @@ function acSearch(q) {
     acClose();
     return;
   }
+  const cached = readLookup(lookupKey("search", [query.toUpperCase()]), 6 * 60 * 60 * 1000);
+  if (cached) {
+    ac.items = cached;
+    ac.idx = -1;
+    acPaint();
+    return;
+  }
   const seq = ++ac.seq;
   ac.timer = setTimeout(async () => {
     try {
       const data = await api("/search?q=" + encodeURIComponent(query));
       if (seq !== ac.seq) return;
       ac.items = (data.quotes || []).filter((x) => x && x.symbol).slice(0, 8);
+      writeLookup(lookupKey("search", [query.toUpperCase()]), ac.items);
       ac.idx = -1;
       acPaint();
     } catch {
@@ -2063,10 +2116,17 @@ async function loadFinancials(ticker) {
   const t = rememberTicker(ticker);
   if (!t) return;
   const periodTxt = finPeriodLabel();
-  $("fin").hidden = true;
-  $("fin-empty").hidden = false;
-  $("fin-empty").textContent = `Loading ${periodTxt} statements…`;
-  $("resolve-hint").textContent = "Pulling income, cash flow, balance sheet…";
+  const cacheKey = lookupKey("fin", [t, finFreq(), finQuarter() || "", finYear() || ""]);
+  const cached = readLookup(cacheKey, 12 * 60 * 60 * 1000);
+  if (cached && cached.ticker) {
+    renderFinancials(cached);
+    $("resolve-hint").textContent = `${cached.ticker} · saved statements`;
+  } else {
+    $("fin").hidden = true;
+    $("fin-empty").hidden = false;
+    $("fin-empty").textContent = `Loading ${periodTxt} statements…`;
+    $("resolve-hint").textContent = "Pulling income, cash flow, balance sheet…";
+  }
   setBusy("analyze-btn", true);
   setBusy("fin-load", true);
   showQuote(t);
@@ -2074,6 +2134,7 @@ async function loadFinancials(ticker) {
     const data = await api("/financials?ticker=" + encodeURIComponent(t) + finPeriodQuery());
     syncFinPeriodFromResponse(data);
     rememberTicker(data.ticker || t);
+    writeLookup(cacheKey, data);
     $("resolve-hint").textContent = `${data.ticker} · ${data.name || ""}`;
     renderFinancials(data);
     const live = $("live-quote");
@@ -2081,10 +2142,12 @@ async function loadFinancials(ticker) {
     if (live && finPx && !live.hidden) finPx.innerHTML = live.innerHTML;
     showQuote(data.ticker || t);
   } catch (err) {
-    $("resolve-hint").innerHTML = `<span class="err">${esc(err.message)}</span>`;
-    $("fin-empty").textContent = err.message;
-    $("fin-empty").hidden = false;
-    toast(err.message, "err");
+    if (!(cached && cached.ticker)) {
+      $("resolve-hint").innerHTML = `<span class="err">${esc(err.message)}</span>`;
+      $("fin-empty").textContent = err.message;
+      $("fin-empty").hidden = false;
+      toast(err.message, "err");
+    }
   } finally {
     setBusy("analyze-btn", false);
     setBusy("fin-load", false);
@@ -2095,13 +2158,22 @@ async function loadOptionsTicker(ticker) {
   const t = rememberTicker(ticker);
   if (!t) return;
   const ym = tapeYM();
-  $("options-empty").textContent = `Scanning ${t} ${ym.label} tape for ≥ $1M premiums…`;
-  $("options-empty").hidden = false;
-  setOptionsAsOf(null);
-  skeletonRows($("options-list"), 8);
+  const cacheKey = lookupKey("opt", [t, ym.year, ym.month]);
+  const cached = readLookup(cacheKey, 15 * 60 * 1000);
+  if (cached) {
+    renderOptions(cached.rows || []);
+    setOptionsAsOf(cached.as_of);
+    $("options-empty").hidden = !!(cached.rows || []).length;
+  } else {
+    $("options-empty").textContent = `Scanning ${t} ${ym.label} tape for ≥ $1M premiums…`;
+    $("options-empty").hidden = false;
+    setOptionsAsOf(null);
+    skeletonRows($("options-list"), 8);
+  }
   showQuote(t);
   try {
     const data = await api("/options/flags?ticker=" + encodeURIComponent(t) + "&universe=" + encodeURIComponent($("universe").value) + ymQuery());
+    writeLookup(cacheKey, data);
     renderOptions(data.rows || []);
     setOptionsAsOf(data.as_of);
     $("options-status").textContent = `${ym.label} · ${data.n || 0} contracts ≥ $1M on ${data.ticker}` + (data.note ? " · " + data.note : "");
@@ -2112,10 +2184,12 @@ async function loadOptionsTicker(ticker) {
       $("options-empty").hidden = false;
     }
   } catch (err) {
-    $("options-list").innerHTML = "";
-    $("options-empty").textContent = err.message;
-    $("options-empty").hidden = false;
-    toast(err.message, "err");
+    if (!cached) {
+      $("options-list").innerHTML = "";
+      $("options-empty").textContent = err.message;
+      $("options-empty").hidden = false;
+      toast(err.message, "err");
+    }
   }
 }
 
@@ -2123,12 +2197,20 @@ async function loadVolumeTicker(ticker) {
   const t = rememberTicker(ticker);
   if (!t) return;
   const ym = tapeYM();
-  $("volume-empty").textContent = `Scanning ${t} ${ym.label} for prints ≥ ${money(minPrint())}…`;
-  $("volume-empty").hidden = false;
-  skeletonRows($("volume-list"), 8);
+  const cacheKey = lookupKey("vol", [t, ym.year, ym.month, minPrint()]);
+  const cached = readLookup(cacheKey, 15 * 60 * 1000);
+  if (cached) {
+    renderVolume(cached);
+    $("volume-empty").hidden = !!(cached.rows || []).length;
+  } else {
+    $("volume-empty").textContent = `Scanning ${t} ${ym.label} for prints ≥ ${money(minPrint())}…`;
+    $("volume-empty").hidden = false;
+    skeletonRows($("volume-list"), 8);
+  }
   showQuote(t);
   try {
     const data = await api("/volume/large?ticker=" + encodeURIComponent(t) + ymQuery() + minPrintQuery());
+    writeLookup(cacheKey, data);
     renderVolume(data);
     $("volume-status").textContent = `${ym.label} · ${data.n || 0} prints ≥ ${money(minPrint())} on ${data.ticker} (${data.interval || ""} bars)` + (data.note ? " · " + data.note : "");
     $("resolve-hint").textContent = data.ticker;
@@ -2138,10 +2220,12 @@ async function loadVolumeTicker(ticker) {
       $("volume-empty").hidden = false;
     }
   } catch (err) {
-    $("volume-list").innerHTML = "";
-    $("volume-empty").textContent = err.message;
-    $("volume-empty").hidden = false;
-    toast(err.message, "err");
+    if (!cached) {
+      $("volume-list").innerHTML = "";
+      $("volume-empty").textContent = err.message;
+      $("volume-empty").hidden = false;
+      toast(err.message, "err");
+    }
   }
 }
 
@@ -2600,33 +2684,45 @@ async function loadEtfs(refresh = false) {
 }
 
 async function loadDive(ticker) {
-  $("dive").hidden = true;
-  $("dive-empty").hidden = false;
-  $("dive-empty").textContent = `Running analysis on ${ticker}… this takes a few seconds.`;
-  $("resolve-hint").textContent = "Resolving symbol and running analysis…";
+  const t = cleanTicker(ticker) || ticker;
+  const period = $("period").value;
+  const horizon = Number($("horizon").value);
+  const cacheKey = lookupKey("an", [cleanTicker(t) || t, period, horizon]);
+  const cached = readLookup(cacheKey, 6 * 60 * 60 * 1000);
+  if (cached && cached.ticker) {
+    renderDive(cached);
+    $("dive").hidden = false;
+    $("dive-empty").hidden = true;
+    $("resolve-hint").textContent = `${cached.ticker} · saved analysis, checking for a newer one…`;
+  } else {
+    $("dive").hidden = true;
+    $("dive-empty").hidden = false;
+    $("dive-empty").textContent = `Running analysis on ${t}…`;
+    $("resolve-hint").textContent = "Resolving symbol and running analysis…";
+  }
   setBusy("analyze-btn", true);
   try {
-    const res = await api("/analyze", {
-      method: "POST",
-      body: JSON.stringify({
-        ticker,
-        period: $("period").value,
-        horizon: Number($("horizon").value),
-        deep: true,
-      }),
-    });
+    const res = await api(
+      "/analyze?ticker=" + encodeURIComponent(t) +
+      "&period=" + encodeURIComponent(period) +
+      "&horizon=" + encodeURIComponent(horizon) +
+      "&deep=true"
+    );
+    writeLookup(cacheKey, res);
     const extra = res.queried && res.ticker && res.queried.toUpperCase() !== res.ticker
       ? `Resolved ${res.queried} → ${res.ticker} (${res.name || ""}).`
       : `${res.ticker} · ${res.name || ""}`;
     $("resolve-hint").textContent = extra;
     if (res.ticker) rememberTicker(res.ticker);
-    setView("dive", { ticker: res.ticker || ticker });
+    setView("dive", { ticker: res.ticker || t });
     renderDive(res);
   } catch (err) {
-    $("resolve-hint").innerHTML = `<span class="err">${esc(err.message)}</span>`;
-    $("dive-empty").textContent = err.message;
-    $("dive-empty").hidden = false;
-    toast(err.message, "err");
+    if (!(cached && cached.ticker)) {
+      $("resolve-hint").innerHTML = `<span class="err">${esc(err.message)}</span>`;
+      $("dive-empty").textContent = err.message;
+      $("dive-empty").hidden = false;
+      toast(err.message, "err");
+    }
   } finally {
     setBusy("analyze-btn", false);
   }

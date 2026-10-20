@@ -50,6 +50,25 @@ class ScanIn(BaseModel):
     cursor: int | None = Field(default=None, ge=0)
 
 
+def _edge(response: Response, cache_control: str) -> None:
+    """Browser and Vercel CDN. The CDN header is what keeps a repeat lookup off the model."""
+    response.headers["Cache-Control"] = cache_control
+    response.headers["CDN-Cache-Control"] = cache_control
+    response.headers["Vercel-CDN-Cache-Control"] = cache_control
+
+
+def _cached(response: Response, key: str, ttl_sec: float, build, cache_control: str, *, durable: bool = True):
+    from aieq.memcache import cached_call
+
+    body = cached_call(key, ttl_sec, build, durable=durable)
+    _edge(response, cache_control)
+    return body
+
+
+def _safe_key(text: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in text)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     from aieq.store import backend_name, ensure_schema
@@ -83,40 +102,66 @@ def universes() -> dict[str, Any]:
 
 
 @app.get("/search")
-def search(q: str = Query(..., min_length=1)) -> dict[str, Any]:
-    resolved, tried = resolve_symbol(q)
-    quotes = []
-    for item in _search_yahoo(q)[:10]:
-        quotes.append(
-            {
-                "symbol": item.get("symbol"),
-                "shortname": item.get("shortname") or item.get("longname") or item.get("shortName"),
-                "longname": item.get("longname") or item.get("longName"),
-                "exchange": item.get("exchange") or item.get("exchDisp"),
-                "quoteType": item.get("quoteType"),
-            }
-        )
-    return {"query": q, "resolved": resolved, "tried": tried, "quotes": quotes}
+def search(response: Response, q: str = Query(..., min_length=1)) -> dict[str, Any]:
+    def build() -> dict[str, Any]:
+        resolved, tried = resolve_symbol(q)
+        quotes = []
+        for item in _search_yahoo(q)[:10]:
+            quotes.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "shortname": item.get("shortname") or item.get("longname") or item.get("shortName"),
+                    "longname": item.get("longname") or item.get("longName"),
+                    "exchange": item.get("exchange") or item.get("exchDisp"),
+                    "quoteType": item.get("quoteType"),
+                }
+            )
+        return {"query": q, "resolved": resolved, "tried": tried, "quotes": quotes}
+
+    return _cached(
+        response,
+        "search_v1_" + _safe_key(q.strip().lower()),
+        6 * 3600,
+        build,
+        "public, max-age=300, s-maxage=86400, stale-while-revalidate=86400",
+    )
 
 
 @app.get("/quote")
-def quote(ticker: str = Query(..., min_length=1)) -> dict[str, Any]:
+def quote(response: Response, ticker: str = Query(..., min_length=1)) -> dict[str, Any]:
     from aieq.data import fetch_quote
 
     try:
-        return fetch_quote(ticker)
+        payload = fetch_quote(ticker)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    _edge(response, "public, max-age=15, s-maxage=30, stale-while-revalidate=120")
+    return payload
 
 
 @app.post("/analyze")
-def analyze_ep(body: AnalyzeIn) -> dict[str, Any]:
-    settings = Settings(period=body.period, horizon=int(body.horizon))
-    try:
+def analyze_ep(response: Response, body: AnalyzeIn) -> dict[str, Any]:
+    from aieq.symbols import resolve_symbol
+
+    resolved, _tried = resolve_symbol(body.ticker)
+    sym = resolved or body.ticker.strip().upper()
+    key = "analysis_v1_" + _safe_key(f"{sym}|{body.period}|{int(body.horizon)}|{int(body.deep)}")
+
+    def build() -> dict[str, Any]:
+        settings = Settings(period=body.period, horizon=int(body.horizon))
         res = analyze(body.ticker, settings=settings, deep=body.deep)
         return result_to_jsonable(res)
+
+    try:
+        return _cached(
+            response,
+            key,
+            6 * 3600,
+            build,
+            "public, max-age=60, s-maxage=21600, stale-while-revalidate=86400",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -125,12 +170,13 @@ def analyze_ep(body: AnalyzeIn) -> dict[str, Any]:
 
 @app.get("/analyze")
 def analyze_get(
+    response: Response,
     ticker: str = Query(...),
     period: str = "5y",
     horizon: int = 5,
     deep: bool = True,
 ) -> dict[str, Any]:
-    return analyze_ep(AnalyzeIn(ticker=ticker, period=period, horizon=horizon, deep=deep))
+    return analyze_ep(response, AnalyzeIn(ticker=ticker, period=period, horizon=horizon, deep=deep))
 
 
 @app.get("/board")
@@ -188,6 +234,7 @@ def board_refresh(body: ScanIn | None = None) -> dict[str, Any]:
 
 @app.get("/options/flags")
 def options_flags(
+    response: Response,
     ticker: str | None = Query(default=None),
     universe: str | None = Query(default=None),
     year: int | None = Query(default=None),
@@ -198,24 +245,35 @@ def options_flags(
         if not resolved:
             raise HTTPException(status_code=400, detail=f"No listing for {ticker!r}. Tried: {', '.join(tried) or 'nothing'}.")
         year, month = tape_year_month(year, month)
-        try:
+
+        def build() -> dict[str, Any]:
             rows = enrich_option_rows(flag_option_prints(resolved, max_expiries=12, year=year, month=month), universe)
+            return {
+                "ticker": resolved,
+                "queried": ticker,
+                "n": len(rows),
+                "n_tickers": 1 if rows else 0,
+                "counts": option_sentiment_counts(rows),
+                "year": year,
+                "month": month,
+                "min_premium": 1_000_000,
+                "rows": rows,
+                "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                "job": get_options_state(),
+                "note": f"Tape for {year}-{month:02d} expiries (current month).",
+            }
+
+        try:
+            return _cached(
+                response,
+                "opt_v1_" + _safe_key(f"{resolved}|{year}|{month}"),
+                15 * 60,
+                build,
+                "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+            )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {
-            "ticker": resolved,
-            "queried": ticker,
-            "n": len(rows),
-            "n_tickers": 1 if rows else 0,
-            "counts": option_sentiment_counts(rows),
-            "year": year,
-            "month": month,
-            "min_premium": 1_000_000,
-            "rows": rows,
-            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "job": get_options_state(),
-            "note": f"Tape for {year}-{month:02d} expiries (current month).",
-        }
+    response.headers["Cache-Control"] = "no-store"
     uni = universe or "mega"
     payload = load_screen("options", uni)
     rows = enrich_option_rows(payload.get("rows") or [], uni)
@@ -236,6 +294,7 @@ def options_refresh(body: ScanIn | None = None) -> dict[str, Any]:
 
 @app.get("/volume/large")
 def volume_large(
+    response: Response,
     ticker: str | None = Query(default=None),
     universe: str | None = Query(default=None),
     year: int | None = Query(default=None),
@@ -249,23 +308,34 @@ def volume_large(
         if not resolved:
             raise HTTPException(status_code=400, detail=f"No listing for {ticker!r}.")
         year, month = tape_year_month(year, month)
-        block = large_block_prints(resolved, year=year, month=month, min_notional=min_notional)
-        prints = (block or {}).get("prints") or []
-        return {
-            "ticker": resolved,
-            "n": len(prints),
-            "year": year,
-            "month": month,
-            "min_notional": min_notional,
-            "interval": (block or {}).get("interval"),
-            "summary": {k: v for k, v in (block or {}).items() if k not in {"prints"}} if block else None,
-            "rows": prints,
-            "job": get_volume_state(),
-            "note": (
-                f"Bars of at least ${min_notional:,.0f}. A green bar is treated as a one-time buy "
-                "(bullish); a red bar as a sell. Yahoo does not name the buyer."
-            ),
-        }
+
+        def build() -> dict[str, Any]:
+            block = large_block_prints(resolved, year=year, month=month, min_notional=min_notional)
+            prints = (block or {}).get("prints") or []
+            return {
+                "ticker": resolved,
+                "n": len(prints),
+                "year": year,
+                "month": month,
+                "min_notional": min_notional,
+                "interval": (block or {}).get("interval"),
+                "summary": {k: v for k, v in (block or {}).items() if k not in {"prints"}} if block else None,
+                "rows": prints,
+                "job": get_volume_state(),
+                "note": (
+                    f"Bars of at least ${min_notional:,.0f}. A green bar is treated as a one-time buy "
+                    "(bullish); a red bar as a sell. Yahoo does not name the buyer."
+                ),
+            }
+
+        return _cached(
+            response,
+            "vol_v1_" + _safe_key(f"{resolved}|{year}|{month}|{int(min_notional)}"),
+            15 * 60,
+            build,
+            "public, max-age=60, s-maxage=300, stale-while-revalidate=3600",
+        )
+    response.headers["Cache-Control"] = "no-store"
     uni = universe or "mega"
     payload = load_screen("volume", uni)
     payload["job"] = get_volume_state()
@@ -315,13 +385,20 @@ def etfs(response: Response, refresh: bool = Query(default=False)) -> dict[str, 
 
 @app.get("/financials")
 def financials(
+    response: Response,
     ticker: str = Query(..., min_length=1),
     freq: str = Query(default="quarterly"),
     quarter: int | None = Query(default=None, ge=1, le=4),
     year: int | None = Query(default=None, ge=1990, le=2100),
 ) -> dict[str, Any]:
     try:
-        return fetch_statements(ticker, freq=freq, quarter=quarter, year=year)
+        return _cached(
+            response,
+            "fin_v1_" + _safe_key(f"{ticker.strip().upper()}|{freq}|{quarter}|{year}"),
+            12 * 3600,
+            lambda: fetch_statements(ticker, freq=freq, quarter=quarter, year=year),
+            "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

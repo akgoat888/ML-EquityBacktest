@@ -312,10 +312,21 @@ def fetch_quote(ticker: str) -> dict[str, Any]:
     resolved, tried = resolve_symbol(queried)
     if not resolved:
         raise ValueError(f"No listing for {queried!r}. Tried: {', '.join(tried) or 'nothing'}.")
+    from aieq.memcache import get_mem, put_mem
+
+    mem_key = f"quote:{resolved}"
+    mem = get_mem(mem_key, 45)
+    if isinstance(mem, dict) and mem.get("price"):
+        out = dict(mem)
+        out["queried"] = queried
+        return out
     key = f"quote_{resolved}"
-    cached = _load_cache(key, ttl_hours=20.0 / 3600.0)
+    cached = _load_cache(key, ttl_hours=60.0 / 3600.0)
     if isinstance(cached, dict) and cached.get("price"):
-        return cached
+        put_mem(mem_key, cached)
+        out = dict(cached)
+        out["queried"] = queried
+        return out
 
     t = yf_ticker(resolved)
     last = prev = None
@@ -361,6 +372,7 @@ def fetch_quote(ticker: str) -> dict[str, Any]:
         "as_of": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
     }
     if payload["price"] is not None:
+        put_mem(mem_key, payload)
         _save_cache(key, payload)
     return payload
 
