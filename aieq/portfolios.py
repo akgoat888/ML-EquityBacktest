@@ -13,6 +13,7 @@ from typing import Any
 import json
 import math
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -31,6 +32,9 @@ BALLAST = ["SPY", "TLT", "GLD"]
 HORIZONS = (1, 3, 5, 10)
 CACHE_HOURS = 6.0
 ENRICH_CACHE_HOURS = 6.0
+# A full mid-cap or S&P book does not finish inside one function call.
+# Refresh scores a slice, saves it, and the next refresh continues.
+ENRICH_PER_CALL = 24
 LONG_RUN_GROWTH = 0.06
 MARKET_PRIOR = 0.07
 BALLAST_PRIOR = {"SPY": 0.07, "TLT": 0.04, "GLD": 0.05}
@@ -197,50 +201,71 @@ def _board_rows(universe: str) -> list[dict[str, Any]]:
     return [{"ticker": t, "rating": "HOLD", "score": 0.0, "name": t, "sector": "—"} for t in universe_tickers(universe)]
 
 
-def _enriched_names(universe: str, refresh: bool) -> list[dict[str, Any]]:
-    from aieq.store import doc_age_hours, get_doc, put_doc
+def _saved_names(universe: str) -> list[dict[str, Any]]:
+    from aieq.store import get_doc
 
     path = _enrich_cache_path(universe)
+    try:
+        data = get_doc("portfolio_names", universe)
+        rows = data.get("names") if isinstance(data, dict) else data
+        if isinstance(rows, list) and rows:
+            return [r for r in rows if isinstance(r, dict) and r.get("ticker")]
+    except Exception:
+        pass
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list) and data:
+                return [r for r in data if isinstance(r, dict) and r.get("ticker")]
+        except Exception:
+            pass
+    return []
+
+
+def _store_names(universe: str, rows: list[dict[str, Any]]) -> None:
+    from aieq.store import put_doc
+
+    put_doc("portfolio_names", universe, {"names": rows})
+    try:
+        _enrich_cache_path(universe).write_text(json.dumps(rows, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _enriched_names(universe: str, refresh: bool) -> list[dict[str, Any]]:
+    saved = _saved_names(universe)
     if not refresh:
-        age = doc_age_hours("portfolio_names", universe)
-        if age is not None and age <= ENRICH_CACHE_HOURS:
-            try:
-                data = get_doc("portfolio_names", universe)
-                rows = data.get("names") if isinstance(data, dict) else data
-                if isinstance(rows, list) and rows:
-                    return rows
-            except Exception:
-                pass
-        if path.exists():
-            age_h = (time.time() - path.stat().st_mtime) / 3600.0
-            if age_h <= ENRICH_CACHE_HOURS:
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                    if isinstance(data, list) and data:
-                        return data
-                except Exception:
-                    pass
-    raw = _board_rows(universe)
-    jobs = [(r, False) for r in raw if str(r.get("ticker") or "").upper() not in BALLAST]
-    jobs += [({"ticker": b, "name": b, "rating": "HOLD", "score": 0.0}, True) for b in BALLAST]
-    out: list[dict[str, Any]] = []
+        return saved
+    have = {str(r.get("ticker") or "").upper() for r in saved}
+    jobs: list[tuple[dict[str, Any], bool]] = []
+    for row in _board_rows(universe):
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker or ticker in have or ticker in BALLAST or ticker in SKIP_ETFS:
+            continue
+        jobs.append((row, False))
+        if len(jobs) >= ENRICH_PER_CALL:
+            break
+    for ticker in BALLAST:
+        if ticker not in have:
+            jobs.append(({"ticker": ticker, "name": ticker, "rating": "HOLD", "score": 0.0}, True))
+    if not jobs:
+        return saved
+    fresh: list[dict[str, Any]] = []
     done: set[str] = set()
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futs = [pool.submit(_enrich, r, b) for r, b in jobs]
+        futs = [pool.submit(_enrich, row, ballast) for row, ballast in jobs]
         for fut in as_completed(futs):
             try:
                 item = fut.result()
             except Exception:
                 item = None
-            if item and item["ticker"] not in done:
+            if item and item["ticker"] not in done and item["ticker"] not in have:
                 done.add(item["ticker"])
-                out.append(item)
-    put_doc("portfolio_names", universe, {"names": out})
-    try:
-        path.write_text(json.dumps(out, default=str), encoding="utf-8")
-    except Exception:
-        pass
-    return out
+                fresh.append(item)
+    merged = saved + fresh
+    if fresh:
+        _store_names(universe, merged)
+    return merged
 
 
 # --------------------------------------------------------------------------- model
@@ -702,9 +727,28 @@ def _sleeve(tier: dict[str, Any], holdings: list[dict[str, Any]], h: int) -> dic
 
 # --------------------------------------------------------------------------- public
 
+def _safe_universe(universe: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in (universe or "").strip().lower()) or "global"
+
+
 def _cache_path(universe: str, years: int):
-    safe = "".join(c if c.isalnum() else "_" for c in universe.strip().lower()) or "global"
-    return ensure_cache_dir() / f"portfolios_v3_{safe}_{int(years)}y.json"
+    return ensure_cache_dir() / f"portfolios_v3_{_safe_universe(universe)}_{int(years)}y.json"
+
+
+def _snapshot_path(universe: str, years: int) -> Path:
+    return Path(__file__).resolve().parent / "snapshots" / "portfolios" / f"{_safe_universe(universe)}_{int(years)}.json"
+
+
+def _read_json_book(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(payload, dict) and payload.get("sleeves") is not None:
+        return payload
+    return None
 
 
 def _port_key(universe: str, years: int) -> str:
@@ -734,17 +778,24 @@ def load_portfolios(universe: str, years: int = 1) -> dict[str, Any] | None:
         except Exception:
             pass
     path = _cache_path(universe, years)
-    if not path.exists():
-        return None
-    if (time.time() - path.stat().st_mtime) / 3600.0 > CACHE_HOURS:
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            _port_mem[key] = (time.time(), payload)
+    fresh = path.is_file() and (time.time() - path.stat().st_mtime) / 3600.0 <= CACHE_HOURS
+    payload = _read_json_book(path) if fresh else None
+    if payload is None:
+        # Shipped with the deploy. A page read must not rebuild the book on Yahoo.
+        payload = _read_json_book(_snapshot_path(universe, years))
+    if payload is None and age is not None:
+        try:
+            stale = get_doc("portfolio", key)
+            if isinstance(stale, dict) and stale.get("sleeves") is not None:
+                payload = stale
+        except Exception:
+            payload = None
+    if payload is None:
+        payload = _read_json_book(path)
+    if payload is not None:
+        _port_mem[key] = (time.time(), payload)
         return payload
-    except Exception:
-        return None
+    return None
 
 
 UPGRADE_MIN_EDGE = 0.015  # swap only if the challenger beats the incumbent by ≥1.5pp/yr
@@ -884,9 +935,21 @@ def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool =
     try:
         if not refresh:
             cached = load_portfolios(universe, years)
-            if cached:
+            if cached and (cached.get("sleeves") or int(cached.get("n_candidates") or 0) > 0):
                 return cached
-        names = _enriched_names(universe, refresh)
+            # Score names already saved. Opening the tab must not call Yahoo.
+            names = _saved_names(universe)
+            if not names:
+                return _empty_portfolios(
+                    universe,
+                    years,
+                    note=(
+                        f"No saved {years}-year book for this universe yet. "
+                        "Use Refresh once the names have been scored."
+                    ),
+                )
+        else:
+            names = _enriched_names(universe, refresh)
         scored = _score_names(names, years)
         built = _build_sleeves(scored, years)
         idx = HORIZONS.index(years)
@@ -927,7 +990,7 @@ def suggest_portfolios(universe: str = "global", years: int = 1, refresh: bool =
         except OSError:
             pass
         return payload
-    except OSError:
+    except Exception:
         cached = load_portfolios(universe, years)
         if cached:
             return cached

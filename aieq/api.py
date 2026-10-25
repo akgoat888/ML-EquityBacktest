@@ -364,10 +364,11 @@ def portfolios(
         from aieq.portfolios import _empty_portfolios, load_portfolios
 
         payload = load_portfolios(universe, years) or _empty_portfolios(universe, years)
-    if refresh:
+    ready = bool(payload.get("sleeves")) or int(payload.get("n_candidates") or 0) > 0
+    if refresh or not ready:
         response.headers["Cache-Control"] = "no-store"
-    elif payload.get("sleeves") is not None:
-        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=600, stale-while-revalidate=86400"
+    else:
+        _edge(response, "public, max-age=60, s-maxage=3600, stale-while-revalidate=86400")
     return payload
 
 
@@ -379,7 +380,7 @@ def etfs(response: Response, refresh: bool = Query(default=False)) -> dict[str, 
     if refresh:
         response.headers["Cache-Control"] = "no-store"
     elif payload.get("funds") is not None:
-        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=600, stale-while-revalidate=86400"
+        _edge(response, "public, max-age=60, s-maxage=3600, stale-while-revalidate=86400")
     return payload
 
 

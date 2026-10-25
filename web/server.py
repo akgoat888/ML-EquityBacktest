@@ -56,6 +56,29 @@ def portfolios_page():
     return _desk("portfolios")
 
 
+def _public_json(rel: str):
+    path = (PUBLIC / rel).resolve()
+    root = PUBLIC.resolve()
+    if path != root and root not in path.parents or not path.is_file():
+        return ("Not found", 404)
+    return send_file(path, mimetype="application/json", max_age=3600)
+
+
+@app.route("/portfolio-books/<path:name>")
+def portfolio_book(name: str):
+    return _public_json("portfolio-books/" + name)
+
+
+@app.route("/universes/<path:name>")
+def universe_file(name: str):
+    return _public_json("universes/" + name)
+
+
+@app.route("/etfs.json")
+def etf_file():
+    return _public_json("etfs.json")
+
+
 @app.route("/etfs")
 def etfs_page():
     return _desk("etfs")

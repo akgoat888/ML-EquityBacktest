@@ -646,6 +646,10 @@ function minPrintQuery() {
 function showHome(push = true) {
   setView("home");
   if (push) history.pushState({ view: "home" }, "", "/");
+  if (!(state.rows || []).length && !state.boardStarted) {
+    state.boardStarted = true;
+    loadBoard().catch((err) => toast(err.message, "err"));
+  }
 }
 
 function pageUrl(name, ticker) {
@@ -2446,14 +2450,18 @@ function renderPortfolios(data) {
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
-  $("port-chart-wrap").hidden = false;
   $("port-chart-sub").textContent = `${years}-year horizon vs S&P 500 11.5%/yr · ${data.universe || ""} · ${data.as_of || ""}`;
   const canvas = $("port-chart");
-  const wrap = canvas.parentElement;
-  const fresh = document.createElement("canvas");
-  fresh.id = "port-chart";
-  wrap.replaceChild(fresh, canvas);
-  portfolioChart(fresh, sleeves, years, hurdle);
+  try {
+    const wrap = canvas.parentElement;
+    const fresh = document.createElement("canvas");
+    fresh.id = "port-chart";
+    wrap.replaceChild(fresh, canvas);
+    portfolioChart(fresh, sleeves, years, hurdle);
+    $("port-chart-wrap").hidden = false;
+  } catch {
+    if ($("port-chart-wrap")) $("port-chart-wrap").hidden = true;
+  }
 
   el.innerHTML = sleeves.map((s) => {
     const chips = (s.sectors || []).slice(0, 8).map((x) => `<span class="chip">${x.sector} <b>${pct(x.weight)}</b></span>`).join("");
@@ -2527,14 +2535,41 @@ function writePortCache(uni, years, data) {
   } catch { /* quota */ }
 }
 
+function portStatusLine(data, uni, years) {
+  const listed = (data.beats_spy || []).length || (data.sleeves || []).filter((s) => sleeveBeatsSpy(s, spyAnn(data))).length;
+  const label = UNIVERSE_LABEL[data.universe] || data.universe || uni;
+  return `${years}-year horizon · ${listed} sleeve${listed === 1 ? "" : "s"} above the S&P · ${data.n_candidates || 0} names scored from ${label} · ${data.as_of || ""}`;
+}
+
+async function paintPortBook(uni, years) {
+  const cached = readPortCache(uni, years);
+  if (cached) {
+    renderPortfolios(cached);
+    $("port-status").textContent = portStatusLine(cached, uni, years);
+    return true;
+  }
+  try {
+    const res = await fetch("/portfolio-books/" + encodeURIComponent(uni) + "_" + years + ".json");
+    if (!res.ok) return false;
+    const data = await res.json();
+    if (!data || !Array.isArray(data.sleeves)) return false;
+    writePortCache(uni, years, data);
+    if ($("universe").value !== uni || portYears() !== years) return true;
+    renderPortfolios(data);
+    $("port-status").textContent = portStatusLine(data, uni, years);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function loadPortfolios(refresh = false) {
   const uni = $("universe").value;
   const years = portYears();
   setPortYears(years);
-  const cached = refresh ? null : readPortCache(uni, years);
-  if (cached) {
-    renderPortfolios(cached);
-  } else {
+  let painted = false;
+  if (!refresh) painted = await paintPortBook(uni, years);
+  if (!painted) {
     $("port-empty").hidden = false;
     $("port-empty").textContent = refresh
       ? `Rebuilding ${years}-year sleeves that outrun the S&P 500…`
@@ -2545,18 +2580,25 @@ async function loadPortfolios(refresh = false) {
     $("port-chart-wrap").hidden = true;
     skeletonCards($("port-list"), 2);
   }
-  $("resolve-hint").textContent = `Scoring ${years}-year expected return versus the S&P 500…`;
+  $("resolve-hint").textContent = painted
+    ? "Saved book is up. Checking for a newer one…"
+    : `Scoring ${years}-year expected return versus the S&P 500…`;
   setBusy("port-load", true);
   try {
-    const q = "/portfolios?universe=" + encodeURIComponent(uni) + "&years=" + years + (refresh ? "&refresh=true" : "");
-    const data = await api(q);
+    const q = "/portfolios?universe=" + encodeURIComponent(uni) + "&years=" + years + "&v=20261025" + (refresh ? "&refresh=true" : "");
+    const data = await api(q, { signal: AbortSignal.timeout(refresh ? 28000 : 8000) });
     if ($("universe").value !== uni || portYears() !== years) return;
+    const usable = (data.sleeves || []).length || Number(data.n_candidates) > 0;
+    if (!usable && painted) return;
     writePortCache(uni, years, data);
     renderPortfolios(data);
-    const listed = (data.beats_spy || []).length || (data.sleeves || []).filter((s) => sleeveBeatsSpy(s, spyAnn(data))).length;
-    $("port-status").textContent = `${years}-year horizon · ${listed} sleeve${listed === 1 ? "" : "s"} above the S&P · ${data.n_candidates || 0} names scored from ${UNIVERSE_LABEL[data.universe] || data.universe || uni} · ${data.as_of || ""}`;
+    $("port-status").textContent = portStatusLine(data, uni, years);
     $("resolve-hint").textContent = data.as_of || "";
   } catch (err) {
+    if (painted || readPortCache(uni, years)) {
+      if (refresh) toast("Refresh didn't finish. The saved book stays up.", "err");
+      return;
+    }
     $("port-list").innerHTML = "";
     $("port-empty").textContent = err.message;
     $("port-empty").hidden = false;
@@ -2916,17 +2958,20 @@ async function boot() {
   if ($("ticker") && /[{}]/.test($("ticker").value)) $("ticker").value = "";
   if (ticker) rememberTicker(ticker);
   const uni = $("universe").value;
-  if (!readBoardCache(uni)) skeletonCards($("board-list"), 8);
-  paintUniverseShell(uni);
-  loadBoard().catch((err) => {
-    if (state.shellUni === uni && (state.rows || []).length) return;
-    $("board-list").innerHTML = "";
-    $("board-empty").textContent = "Could not reach FastAPI at " + API + " — " + err.message;
-    $("board-empty").hidden = false;
-    toast("Backend unreachable — " + err.message, "err", 9000);
-  });
   const initial = activeTicker();
   const page = document.body.dataset.page || "home";
+  if (page === "home") {
+    state.boardStarted = true;
+    if (!readBoardCache(uni)) skeletonCards($("board-list"), 8);
+    paintUniverseShell(uni);
+    loadBoard().catch((err) => {
+      if (state.shellUni === uni && (state.rows || []).length) return;
+      $("board-list").innerHTML = "";
+      $("board-empty").textContent = "Could not reach FastAPI at " + API + " — " + err.message;
+      $("board-empty").hidden = false;
+      toast("Backend unreachable — " + err.message, "err", 9000);
+    });
+  }
   if (initial) showQuote(initial);
   if (page === "ticker" && initial) openTicker(initial, { push: false });
   else if (page === "financials") {
