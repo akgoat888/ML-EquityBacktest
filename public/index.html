@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Equities Desk</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261025b" />
+  <link rel="stylesheet" href="/static/style.css?v=20261030a" />
 </head>
 <body data-api="" data-page="" data-ticker="" data-period="5y" data-horizon="5">
 <script>
@@ -32,6 +32,9 @@
   } else if (path === "/volume") {
     page = "volume";
     ticker = q.get("ticker") || "";
+  } else if (path === "/ta") {
+    page = "ta";
+    ticker = q.get("ticker") || "";
   } else if (path === "/portfolios") {
     page = "portfolios";
   } else if (path === "/etfs") {
@@ -54,6 +57,7 @@
     <nav class="nav" id="main-nav">
       <a href="/options" data-view="options">Options</a>
       <a href="/volume" data-view="volume">Volume</a>
+      <a href="/ta" data-view="ta">TA</a>
       <a href="/financials" data-view="financials">Financials</a>
       <a href="/portfolios" data-view="portfolios">Portfolios</a>
       <a href="/etfs" data-view="etfs">ETFs</a>
@@ -222,6 +226,43 @@
     <div id="volume-list"></div>
   </section>
 
+  <section id="view-ta" class="view" hidden>
+    <p class="hint status-line">
+      <span id="ta-status">Fibonacci buy and sell levels, checked against the 50-day, the 200-day, and volume. A buy is a pullback into 38.2–61.8% while price holds the 200-day. A sell is a downtrend rally into that same band.</span>
+    </p>
+    <div class="toolbar compact">
+      <button type="button" class="primary" id="ta-load">Load ticker</button>
+      <button type="button" id="ta-scan">Scan universe</button>
+      <span class="hint">History length is the toolbar setting above.</span>
+    </div>
+    <div class="filters toolbar compact" id="ta-filters">
+      <label>Signal
+        <select id="ta-rating">
+          <option value="ALL" selected>All</option>
+          <option>HIGH BUY</option>
+          <option>BUY</option>
+          <option>HOLD</option>
+          <option>SELL</option>
+          <option>HIGH SELL</option>
+        </select>
+      </label>
+      <label>Search
+        <input id="ta-q" placeholder="Ticker" />
+      </label>
+      <div class="toolbar-grow"></div>
+      <button type="button" id="ta-all" class="ghost">Clear filters</button>
+    </div>
+    <section class="kpis" id="ta-kpis"></section>
+    <div id="ta-empty" class="empty">Enter a ticker for its Fibonacci ladder, or scan the universe.</div>
+    <div id="ta-summary"></div>
+    <div id="ta-chart-wrap" class="chart-box" hidden>
+      <div class="chart-title"><span>Close, 50-day, 200-day, Fibonacci</span><span class="hint" id="ta-chart-sub"></span></div>
+      <div class="chart-canvas"><canvas id="ta-chart"></canvas></div>
+    </div>
+    <div class="board-count" id="ta-count"></div>
+    <div id="ta-list"></div>
+  </section>
+
   <section id="view-financials" class="view" hidden>
     <div class="toolbar compact fin-toolbar">
       <label>Statements
@@ -303,6 +344,7 @@
     <a href="/" data-view="home">Home</a>
     <a href="/options" data-view="options">Options</a>
     <a href="/volume" data-view="volume">Volume</a>
+    <a href="/ta" data-view="ta">TA</a>
     <a href="/financials" data-view="financials" title="Financials">Fin</a>
     <a href="/portfolios" data-view="portfolios" title="Portfolios">Ports</a>
     <a href="/etfs" data-view="etfs" title="ETFs">ETFs</a>
@@ -326,6 +368,7 @@
         <div class="shortcut-row"><span>Go home</span><kbd>g</kbd> <kbd>h</kbd></div>
         <div class="shortcut-row"><span>Go to Options</span><kbd>g</kbd> <kbd>o</kbd></div>
         <div class="shortcut-row"><span>Go to Volume</span><kbd>g</kbd> <kbd>v</kbd></div>
+        <div class="shortcut-row"><span>Go to TA</span><kbd>g</kbd> <kbd>t</kbd></div>
         <div class="shortcut-row"><span>Go to Financials</span><kbd>g</kbd> <kbd>f</kbd></div>
         <div class="shortcut-row"><span>Go to Portfolios</span><kbd>g</kbd> <kbd>p</kbd></div>
         <div class="shortcut-row"><span>Go to ETFs</span><kbd>g</kbd> <kbd>e</kbd></div>
@@ -336,6 +379,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js?v=20261025b"></script>
+  <script src="/static/app.js?v=20261030a"></script>
 </body>
 </html>

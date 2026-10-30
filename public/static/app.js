@@ -31,6 +31,12 @@ const state = {
   optSort: { key: "premium", dir: "desc" },
   volPayload: null,
   volSort: { key: "notional", dir: "desc" },
+  taRows: [],
+  taSort: { key: "score", dir: "desc" },
+  taToken: 0,
+  taChart: null,
+  taDetail: null,
+  taMode: "",
   boardCache: {},
   shellUni: null,
   portCache: {},
@@ -293,7 +299,7 @@ function sma(values, window) {
 async function api(path, opts = {}) {
   const urls = [API + path];
   const base = path.split("?")[0];
-  if (/^\/(financials|options|volume|portfolios|etfs|quote|search|analyze)/.test(base)) {
+  if (/^\/(financials|options|volume|ta|portfolios|etfs|quote|search|analyze)/.test(base)) {
     urls.push(window.location.origin + "/api" + path);
   }
   let lastErr = new Error("Request failed");
@@ -448,6 +454,7 @@ const VIEW_META = {
   dive: { title: "Analysis", sub: "Ticker analysis" },
   options: { title: "Options · AI Equities Desk", sub: "Options · Call/Put premium ≥ $1M" },
   volume: { title: "Volume · AI Equities Desk", sub: "Volume · concentrated $10M+ prints" },
+  ta: { title: "TA · AI Equities Desk", sub: "TA · Fibonacci, 50-day, 200-day, volume" },
   financials: { title: "Financials · AI Equities Desk", sub: "Financials · statements + stance" },
   portfolios: { title: "Portfolios · AI Equities Desk", sub: "Portfolios · four risk tiers per horizon" },
   etfs: { title: "ETFs · AI Equities Desk", sub: "ETFs · funds expected to outrun the S&P 500" },
@@ -482,7 +489,8 @@ function setPortUniverse(val) {
 
 function setView(name, { ticker } = {}) {
   state.view = name;
-  ["home", "dive", "options", "volume", "financials", "portfolios", "etfs"].forEach((key) => {
+  if (name !== "ta") destroyTaChart();
+  ["home", "dive", "options", "volume", "ta", "financials", "portfolios", "etfs"].forEach((key) => {
     const el = $("view-" + key);
     if (!el) return;
     el.hidden = key !== name;
@@ -657,7 +665,7 @@ function pageUrl(name, ticker) {
   if (!name || name === "home") return "/";
   if (name === "financials") return t ? "/financials/" + encodeURIComponent(t) : "/financials";
   if (name === "dive" || name === "ticker") return t ? tickerUrl(t) : "/";
-  if ((name === "options" || name === "volume") && t) return "/" + name + "?ticker=" + encodeURIComponent(t);
+  if ((name === "options" || name === "volume" || name === "ta") && t) return "/" + name + "?ticker=" + encodeURIComponent(t);
   return "/" + name;
 }
 
@@ -669,6 +677,7 @@ function showPage(name, push = true) {
   updatePeriodTags();
   if (name === "options") loadOptions();
   if (name === "volume") loadVolume();
+  if (name === "ta") loadTa();
   if (name === "portfolios") loadPortfolios();
   if (name === "etfs") loadEtfs(false);
   if (name === "financials") {
@@ -717,6 +726,7 @@ function runForCurrentView(ticker) {
   if (state.view === "financials") loadFinancials(t);
   else if (state.view === "options") loadOptionsTicker(t);
   else if (state.view === "volume") loadVolumeTicker(t);
+  else if (state.view === "ta") loadTaTicker(t);
   else openTicker(t);
 }
 
@@ -725,6 +735,7 @@ function reloadCurrentView() {
   if (t) rememberTicker(t);
   if (state.view === "options") loadOptions();
   else if (state.view === "volume") loadVolume();
+  else if (state.view === "ta") loadTa();
   else if (state.view === "portfolios") loadPortfolios(false);
   else if (state.view === "etfs") loadEtfs(false);
   else if (state.view === "financials" && t) loadFinancials(t);
@@ -869,7 +880,7 @@ function isTyping(e) {
 
 function bindShortcuts() {
   let gAt = 0;
-  const GO = { h: "home", o: "options", v: "volume", f: "financials", p: "portfolios", e: "etfs" };
+  const GO = { h: "home", o: "options", v: "volume", t: "ta", f: "financials", p: "portfolios", e: "etfs" };
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       acClose();
@@ -2078,6 +2089,385 @@ function startVolumePoll() {
   }, 2000);
 }
 
+function signedPct(n) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "—";
+  const v = Number(n) * 100;
+  return (v > 0 ? "+" : "") + v.toFixed(1) + "%";
+}
+
+function destroyTaChart() {
+  if (!state.taChart) return;
+  state.taChart.destroy();
+  state.charts = state.charts.filter((c) => c !== state.taChart);
+  state.taChart = null;
+}
+
+function taActionClass(action) {
+  if (action === "BUY") return "flag-buy";
+  if (action === "SELL") return "flag-sell";
+  return "flag-unknown";
+}
+
+function taPeriod() {
+  const el = $("period");
+  const v = el ? el.value : "5y";
+  return ["2y", "5y", "10y", "max"].includes(v) ? v : "5y";
+}
+
+const TA_LEVEL_COLS = [
+  { key: "ratio", label: "Level", num: true },
+  { key: "price", label: "Price", num: true },
+  { key: "distance", label: "From last", num: true },
+  { key: "action", label: "BUY / SELL" },
+  { key: "note", label: "Role" },
+];
+
+const TA_NAME_COLS = [
+  { key: "ticker", label: "Ticker" },
+  { key: "action", label: "BUY / SELL" },
+  { key: "rating", label: "Rating" },
+  { key: "trend", label: "Trend" },
+  { key: "zone", label: "Fibonacci zone" },
+  { key: "fib_ratio", label: "Retrace", num: true },
+  { key: "close", label: "Price", num: true },
+  { key: "sma_50", label: "50-day", num: true },
+  { key: "sma_200", label: "200-day", num: true },
+  { key: "dist_sma_200", label: "vs 200", num: true },
+  { key: "volume_state", label: "Volume" },
+  { key: "volume_ratio", label: "Vol ×", num: true },
+  { key: "score", label: "Score", num: true },
+  { key: "why", label: "Why" },
+];
+
+function taRatingFilter() {
+  const el = $("ta-rating");
+  return el ? el.value : "ALL";
+}
+
+function filteredTaRows() {
+  const rating = taRatingFilter();
+  const q = ($("ta-q") && $("ta-q").value || "").trim().toUpperCase();
+  return (state.taRows || []).filter((r) => {
+    if (rating && rating !== "ALL" && r.rating !== rating) return false;
+    if (q && !String(r.ticker || "").toUpperCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function renderTaKpis() {
+  const host = $("ta-kpis");
+  if (!host) return;
+  if (state.taMode === "ticker" && state.taDetail) {
+    const d = state.taDetail;
+    const items = [
+      { lbl: "Last", val: fmt(d.close) },
+      { lbl: "50-day", val: fmt(d.sma_50) },
+      { lbl: "200-day", val: fmt(d.sma_200) },
+      { lbl: "vs 200-day", val: signedPct(d.dist_sma_200), cls: signedTone(d.dist_sma_200) },
+      { lbl: "Retrace", val: d.fib_ratio == null ? "—" : (Number(d.fib_ratio) * 100).toFixed(1) + "%" },
+      { lbl: "Volume", val: d.volume_state || "—", cls: d.volume_state === "Distribution" || d.volume_state === "Climax down" ? "neg" : "" },
+    ];
+    host.innerHTML = items.map((it) =>
+      `<div class="kpi ${it.cls || ""}"><div class="lbl">${esc(it.lbl)}</div><div class="val">${esc(it.val)}</div></div>`
+    ).join("");
+    return;
+  }
+  const counts = { "HIGH BUY": 0, BUY: 0, HOLD: 0, SELL: 0, "HIGH SELL": 0 };
+  for (const r of state.taRows || []) {
+    if (counts[r.rating] != null) counts[r.rating] += 1;
+  }
+  const items = [
+    { lbl: "High buy", val: String(counts["HIGH BUY"]), cls: "pos", filter: "HIGH BUY" },
+    { lbl: "Buy", val: String(counts.BUY), cls: "pos", filter: "BUY" },
+    { lbl: "Hold", val: String(counts.HOLD), cls: "mid", filter: "HOLD" },
+    { lbl: "Sell", val: String(counts.SELL), cls: "neg", filter: "SELL" },
+    { lbl: "High sell", val: String(counts["HIGH SELL"]), cls: "neg", filter: "HIGH SELL" },
+  ];
+  const active = taRatingFilter();
+  host.innerHTML = items.map((it) => {
+    const on = it.filter === active ? " is-on" : "";
+    return `<div class="kpi ${it.cls || ""} kpi-click${on}" data-filter="${esc(it.filter)}" role="button" tabindex="0"><div class="lbl">${it.lbl}</div><div class="val">${esc(it.val)}</div></div>`;
+  }).join("");
+  host.querySelectorAll("[data-filter]").forEach((el) => {
+    const apply = () => {
+      const sel = $("ta-rating");
+      if (!sel) return;
+      sel.value = sel.value === el.dataset.filter ? "ALL" : el.dataset.filter;
+      paintTa();
+    };
+    el.addEventListener("click", apply);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        apply();
+      }
+    });
+  });
+}
+
+function renderTaSummary(detail) {
+  const el = $("ta-summary");
+  if (!el) return;
+  if (!detail || state.taMode !== "ticker") {
+    el.innerHTML = "";
+    return;
+  }
+  const swing = detail.swing_low != null && detail.swing_high != null
+    ? `Swing ${fmt(detail.swing_low)} (${detail.swing_low_on || "—"}) → ${fmt(detail.swing_high)} (${detail.swing_high_on || "—"})`
+    : "No confirmed swing";
+  el.innerHTML = `
+    <div class="vol-summary ta-summary">
+      <div class="sub">${esc(detail.ticker || "")} · ${esc(detail.as_of || "")} · ${esc(detail.ma_state || "")} · ${esc(swing)}</div>
+      <div class="stance ${taActionClass(detail.action)}">${esc(detail.action || "HOLD")} · ${esc(detail.rating || "HOLD")}</div>
+      <div class="why">${esc(detail.why || "")}</div>
+      <p class="hint">${esc(detail.note || "")}</p>
+    </div>`;
+}
+
+function taChart(canvas, candles, levels, close) {
+  if (!canvas || typeof Chart === "undefined" || !(candles || []).length) return;
+  destroyTaChart();
+  const labels = candles.map((c) => c.date);
+  const shown = (levels || []).filter((lv) => {
+    if (lv.kind !== "extension") return true;
+    if (!close || lv.price == null) return false;
+    return Math.abs(lv.price - close) / close < 0.12 || lv.active;
+  });
+  const datasets = [
+    { label: "Close", data: candles.map((c) => c.close), borderColor: "#58a6ff", pointRadius: 0, borderWidth: 2, tension: 0.12, fill: false },
+    { label: "50-day", data: candles.map((c) => c.sma50), borderColor: "#e3b341", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
+    { label: "200-day", data: candles.map((c) => c.sma200), borderColor: "#c9d1d9", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
+  ];
+  shown.forEach((lv) => {
+    const color = lv.action === "BUY" ? "rgba(61,220,151,.9)" : lv.action === "SELL" ? "rgba(255,107,107,.85)" : "rgba(139,151,168,.45)";
+    datasets.push({
+      label: `${lv.label} ${lv.action}`,
+      data: labels.map(() => lv.price),
+      borderColor: color,
+      borderDash: lv.active ? [] : [5, 4],
+      borderWidth: lv.active ? 2 : 1,
+      pointRadius: 0,
+      fill: false,
+    });
+  });
+  state.taChart = new Chart(canvas, {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      plugins: {
+        legend: {
+          labels: {
+            color: "#c9d1d9",
+            filter: (item) => item.text === "Close" || item.text === "50-day" || item.text === "200-day",
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: "#8b949e", maxTicksLimit: 8 }, grid: { color: "#21262d" } },
+        y: { ticks: { color: "#8b949e" }, grid: { color: "#30363d" } },
+      },
+    },
+  });
+  state.charts.push(state.taChart);
+}
+
+function paintTa() {
+  const list = $("ta-list");
+  if (!list) return;
+  renderTaKpis();
+  const filters = $("ta-filters");
+  const chartWrap = $("ta-chart-wrap");
+  if (state.taMode === "ticker" && state.taDetail) {
+    if (filters) filters.hidden = true;
+    const detail = state.taDetail;
+    renderTaSummary(detail);
+    const levels = detail.levels || [];
+    if (chartWrap) {
+      chartWrap.hidden = !(detail.candles || []).length;
+      const sub = $("ta-chart-sub");
+      if (sub) sub.textContent = detail.volume_ratio != null ? `Volume ${detail.volume_ratio}× the 20-day` : "";
+    }
+    taChart($("ta-chart"), detail.candles || [], levels, detail.close);
+    const count = $("ta-count");
+    if (count) count.innerHTML = levels.length ? `<b>${levels.length}</b> Fibonacci levels` : "";
+    if (!levels.length) {
+      $("ta-empty").hidden = false;
+      $("ta-empty").textContent = detail.why || "No Fibonacci ladder for this history.";
+      list.innerHTML = "";
+      return;
+    }
+    $("ta-empty").hidden = true;
+    ensureSort(state.taSort, TA_LEVEL_COLS, "ratio");
+    if (!TA_LEVEL_COLS.some((c) => c.key === state.taSort.key)) {
+      state.taSort = { key: "ratio", dir: "asc" };
+    }
+    const sorted = sortByKey(levels, state.taSort.key, state.taSort.dir);
+    list.innerHTML = `<div class="table-card"><div class="table-scroll"><table class="drivers">
+      <thead><tr>${sortableHead(TA_LEVEL_COLS, state.taSort)}</tr></thead>
+      <tbody>${sorted.map((lv) => `<tr class="${lv.active ? "ta-active" : ""}">
+        <td class="num">${esc(lv.label)}</td>
+        <td class="num">${fmt(lv.price)}</td>
+        <td class="num">${signedPct(lv.distance)}</td>
+        <td class="${taActionClass(lv.action)}">${esc(lv.action)}</td>
+        <td>${esc(lv.note || "")}${lv.active ? " · price is here" : ""}</td>
+      </tr>`).join("")}</tbody></table></div></div>`;
+    bindSortHeaders(list, state.taSort, paintTa);
+    return;
+  }
+  if (filters) filters.hidden = false;
+  renderTaSummary(null);
+  destroyTaChart();
+  if (chartWrap) chartWrap.hidden = true;
+  const rows = filteredTaRows();
+  const count = $("ta-count");
+  if (count) {
+    count.innerHTML = state.taRows.length
+      ? `<b>${rows.length}</b> of <b>${state.taRows.length}</b> names`
+      : "";
+  }
+  if (!state.taRows.length) {
+    list.innerHTML = "";
+    return;
+  }
+  if (!rows.length) {
+    $("ta-empty").hidden = false;
+    $("ta-empty").textContent = "No names match this filter.";
+    list.innerHTML = "";
+    return;
+  }
+  $("ta-empty").hidden = true;
+  ensureSort(state.taSort, TA_NAME_COLS, "score");
+  const sorted = sortByKey(rows, state.taSort.key, state.taSort.dir);
+  list.innerHTML = `<div class="table-card"><div class="table-scroll"><table class="drivers">
+    <thead><tr>${sortableHead(TA_NAME_COLS, state.taSort)}</tr></thead>
+    <tbody>${sorted.map((r) => `<tr>
+      <td><a href="/ta?ticker=${encodeURIComponent(r.ticker || "")}" data-ta="${esc(r.ticker)}">${esc(r.ticker)}</a></td>
+      <td class="${taActionClass(r.action)}">${esc(r.action || "—")}</td>
+      <td class="${ratingClass(r.rating)}">${esc(r.rating || "—")}</td>
+      <td>${esc(r.trend || "—")}</td>
+      <td>${esc(r.zone || "—")}</td>
+      <td class="num">${r.fib_ratio == null ? "—" : (Number(r.fib_ratio) * 100).toFixed(1) + "%"}</td>
+      <td class="num">${fmt(r.close)}</td>
+      <td class="num">${fmt(r.sma_50)}</td>
+      <td class="num">${fmt(r.sma_200)}</td>
+      <td class="num ${signedTone(r.dist_sma_200)}">${signedPct(r.dist_sma_200)}</td>
+      <td>${esc(r.volume_state || "—")}</td>
+      <td class="num">${r.volume_ratio == null ? "—" : Number(r.volume_ratio).toFixed(1) + "×"}</td>
+      <td class="num">${r.score == null ? "—" : Number(r.score).toFixed(0)}</td>
+      <td>${esc(r.why || "")}</td>
+    </tr>`).join("")}</tbody></table></div></div>`;
+  bindSortHeaders(list, state.taSort, paintTa);
+  list.querySelectorAll("[data-ta]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      loadTaTicker(a.dataset.ta);
+    });
+  });
+}
+
+async function loadTaTicker(ticker) {
+  const t = rememberTicker(ticker || activeTicker());
+  if (!t) {
+    $("ta-empty").hidden = false;
+    $("ta-empty").textContent = "Type a ticker, then load it.";
+    return;
+  }
+  const token = ++state.taToken;
+  state.taMode = "ticker";
+  state.taDetail = null;
+  if (state.view === "ta") {
+    const url = pageUrl("ta", t);
+    if (location.pathname + location.search !== url) history.replaceState({ view: "ta", ticker: t }, "", url);
+  }
+  $("ta-empty").hidden = false;
+  $("ta-empty").textContent = `Drawing Fibonacci levels for ${t}…`;
+  $("ta-list").innerHTML = "";
+  setBusy("ta-load", true);
+  showQuote(t);
+  try {
+    const data = await api("/ta?ticker=" + encodeURIComponent(t) + "&period=" + encodeURIComponent(taPeriod()));
+    if (token !== state.taToken || state.view !== "ta") return;
+    state.taDetail = data;
+    state.taSort = { key: "ratio", dir: "asc" };
+    if (data.ticker) rememberTicker(data.ticker);
+    $("ta-status").textContent = `${data.ticker || t} · ${data.trend || "—"} · ${data.zone || "—"} · ${data.volume_state || "volume n/a"}`;
+    paintTa();
+  } catch (err) {
+    if (token !== state.taToken) return;
+    $("ta-empty").hidden = false;
+    $("ta-empty").textContent = err.message;
+    toast(err.message, "err");
+  } finally {
+    if (token === state.taToken) setBusy("ta-load", false);
+  }
+}
+
+async function loadTaUniverse() {
+  const token = ++state.taToken;
+  state.taMode = "universe";
+  state.taDetail = null;
+  state.taRows = [];
+  state.taSort = { key: "score", dir: "desc" };
+  const uni = $("universe").value;
+  const period = taPeriod();
+  $("ta-empty").hidden = false;
+  $("ta-empty").textContent = "Scanning the universe…";
+  $("ta-list").innerHTML = "";
+  $("ta-summary").innerHTML = "";
+  destroyTaChart();
+  const wrap = $("ta-chart-wrap");
+  if (wrap) wrap.hidden = true;
+  setBusy("ta-scan", true);
+  paintTa();
+  let cursor = 0;
+  let guard = 0;
+  try {
+    while (guard < 120 && token === state.taToken && state.view === "ta") {
+      guard += 1;
+      const data = await api(
+        "/ta?universe=" + encodeURIComponent(uni) +
+        "&period=" + encodeURIComponent(period) +
+        "&cursor=" + cursor +
+        "&limit=8"
+      );
+      if (token !== state.taToken || state.view !== "ta") return;
+      const seen = new Set(state.taRows.map((r) => r.ticker));
+      for (const row of data.rows || []) {
+        if (row && row.ticker && !seen.has(row.ticker)) state.taRows.push(row);
+      }
+      const total = Number(data.total || 0);
+      $("ta-status").textContent = total
+        ? `Universe scan ${Math.min(data.next_cursor || state.taRows.length, total)} / ${total} · ${period} history`
+        : "Universe scan";
+      $("ta-empty").hidden = state.taRows.length > 0;
+      if (!state.taRows.length) $("ta-empty").textContent = "Scanning the universe…";
+      paintTa();
+      if (data.done) break;
+      const next = Number(data.next_cursor);
+      if (!Number.isFinite(next) || next <= cursor) break;
+      cursor = next;
+    }
+    if (token === state.taToken && !state.taRows.length) {
+      $("ta-empty").hidden = false;
+      $("ta-empty").textContent = "No names came back for this universe.";
+    }
+  } catch (err) {
+    if (token !== state.taToken) return;
+    $("ta-empty").hidden = !state.taRows.length;
+    if (!state.taRows.length) $("ta-empty").textContent = err.message;
+    toast(err.message, "err");
+  } finally {
+    if (token === state.taToken) setBusy("ta-scan", false);
+  }
+}
+
+function loadTa({ mode } = {}) {
+  if (mode) state.taMode = mode;
+  else if (!state.taMode) state.taMode = activeTicker() ? "ticker" : "universe";
+  if (state.taMode === "universe" || !activeTicker()) return loadTaUniverse();
+  return loadTaTicker(activeTicker());
+}
+
 function stmtTable(title, stmt) {
   if (!stmt || !(stmt.rows || []).length) return `<p class="hint">${title}: no Yahoo statement.</p>`;
   const head = (stmt.columns || []).map((c, i) =>
@@ -2283,6 +2673,35 @@ function sleeveEdge(s, hurdle) {
   return Number(s.exp_ann || 0) - hurdle;
 }
 
+const CASH_RATE = 0.04;
+const SPY_VOL = 0.16;
+
+function sleeveRisk(s, hurdle) {
+  const ann = Number(s.exp_ann) || 0;
+  const vol = Math.max(Number(s.risk_vol) || 0, 0.05);
+  const h = Number(hurdle) || 0.115;
+  const ra = CASH_RATE + (ann - CASH_RATE) * (SPY_VOL / vol);
+  return {
+    ra,
+    raEdge: ra - h,
+    sharpe: (ann - CASH_RATE) / vol,
+    spySharpe: (h - CASH_RATE) / SPY_VOL,
+    edge: sleeveEdge(s, h),
+  };
+}
+
+function uniqueSleeves(sleeves) {
+  const seen = new Set();
+  const out = [];
+  for (const s of sleeves || []) {
+    const key = (s.holdings || []).map((h) => h.ticker).filter(Boolean).sort().join("|");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
 function holdingWeightLabel(h, pctInt) {
   if (h.weight_pct != null && Number.isFinite(Number(h.weight_pct))) return `${Number(h.weight_pct)}%`;
   if (pctInt != null) return `${pctInt}%`;
@@ -2313,16 +2732,19 @@ function bandRail(s) {
 function portfolioChart(canvas, sleeves, years, hurdle) {
   const labels = Array.from({ length: years + 1 }, (_, i) => (i === 0 ? "Now" : `Y${i}`));
   const spy = Number(hurdle) || 0.115;
-  const datasets = sleeves.filter((s) => (s.path || []).length).map((s) => ({
-    label: s.label,
-    data: s.path.map((p) => p.expected),
-    borderColor: s.color,
-    backgroundColor: s.color,
-    tension: 0.25,
-    pointRadius: years <= 3 ? 3 : 0,
-    borderWidth: 2,
-    fill: false,
-  }));
+  const datasets = sleeves.map((s) => {
+    const ra = sleeveRisk(s, spy).ra;
+    return {
+      label: s.label,
+      data: labels.map((_, i) => Math.round(10000 * (1 + ra) ** i)),
+      borderColor: s.color,
+      backgroundColor: s.color,
+      tension: 0.25,
+      pointRadius: years <= 3 ? 3 : 0,
+      borderWidth: 2,
+      fill: false,
+    };
+  });
   datasets.push({
     label: "S&P 500 11.5%/yr",
     data: labels.map((_, i) => Math.round(10000 * (1 + spy) ** i)),
@@ -2400,8 +2822,10 @@ function renderPortfolios(data) {
   const el = $("port-list");
   const years = Number(data.years || 1);
   const hurdle = spyAnn(data);
-  const sleeves = (data.sleeves || []).filter((s) => sleeveBeatsSpy(s, hurdle) && Number(s.n || (s.holdings || []).length) > 0);
+  const sleeves = uniqueSleeves((data.sleeves || []).filter((s) => Number(s.n || (s.holdings || []).length) > 0));
   const vs = $("port-vs-spy");
+  const title = document.querySelector("#port-chart-wrap .chart-title span");
+  if (title) title.textContent = "Growth of $10,000 at S&P risk";
   if (!sleeves.length) {
     $("port-empty").hidden = false;
     $("port-empty").textContent = `No ${years}-year sleeve in this universe is expected to outrun the S&P 500’s 11.5%/yr, so none are listed.`;
@@ -2417,31 +2841,32 @@ function renderPortfolios(data) {
     return;
   }
   $("port-empty").hidden = true;
-  const beaters = sleeves.filter((s) => sleeveBeatsSpy(s, hurdle));
+  const beaters = sleeves.filter((s) => sleeveRisk(s, hurdle).raEdge > 0);
   if (vs) {
     vs.hidden = false;
     if (beaters.length) {
       const bits = beaters.map((s) => {
-        const edge = sleeveEdge(s, hurdle);
-        return `<b>${s.label}</b> (${signedPct(s.exp_ann, 1)}/yr, ${signedPct(edge, 1)} vs S&amp;P)`;
+        const risk = sleeveRisk(s, hurdle);
+        return `<b>${s.label}</b> (edge ${signedPct(risk.edge, 1)}/yr, risk-adjusted ${signedPct(risk.ra, 1)}/yr)`;
       }).join(", ");
-      vs.innerHTML = `<span class="port-vs-kicker">Expected to outrun the S&amp;P 500</span>
-        <p>S&amp;P 500 hurdle is <b>11.5%/yr</b> annualized. Model sleeves above that: ${bits}.</p>`;
+      vs.innerHTML = `<span class="port-vs-kicker">Risk-adjusted edge over the S&amp;P 500</span>
+        <p>Edge is return minus the S&amp;P’s <b>11.5%/yr</b>. Risk-adjusted return scales that result to the S&amp;P’s 16% volatility. Above the hurdle after that scaling: ${bits}.</p>`;
       vs.classList.remove("lags");
     } else {
-      vs.innerHTML = `<span class="port-vs-kicker lags">None modeled above the S&amp;P 500</span>
-        <p>Every sleeve’s expected annualized return is at or below the S&amp;P’s <b>11.5%/yr</b> long-run hurdle on this universe and horizon.</p>`;
+      const sample = sleeveRisk(sleeves[0], hurdle);
+      vs.innerHTML = `<span class="port-vs-kicker lags">No risk-adjusted edge</span>
+        <p>A higher raw return is not an edge if the sleeve is much more volatile than the S&amp;P. ${sleeves[0].label} earns ${signedPct(sample.edge, 1)}/yr of raw edge, which is ${signedPct(sample.ra, 1)}/yr once scaled to the S&amp;P’s 16% volatility — under 11.5%.</p>`;
       vs.classList.add("lags");
     }
   }
   $("port-summary").innerHTML = sleeves.map((s) => {
-    const edge = sleeveEdge(s, hurdle);
-    const beats = sleeveBeatsSpy(s, hurdle);
+    const risk = sleeveRisk(s, hurdle);
+    const beats = risk.raEdge > 0;
     return `
     <div class="tier-pill${beats ? " beats-spy" : ""}" style="--tier:${s.color}" data-jump="port-${s.id}">
-      <div class="lbl">${s.label}${beats ? " · vs S&P" : ""}</div>
-      <div class="val">${signedPct(s.exp_total)}</div>
-      <div class="sub2">${signedPct(s.exp_ann, 1)}/yr · ${beats ? signedPct(edge, 1) + " vs S&P" : "trails S&P"} · ${s.n} names</div>
+      <div class="lbl">${s.label} · risk-adjusted</div>
+      <div class="val ${beats ? "pos" : "neg"}">${signedPct(risk.ra, 1)}<small>/yr</small></div>
+      <div class="sub2">Edge ${signedPct(risk.edge, 1)}/yr · Sharpe ${risk.sharpe.toFixed(2)} vs ${risk.spySharpe.toFixed(2)}</div>
     </div>`;
   }).join("");
   $("port-summary").querySelectorAll("[data-jump]").forEach((p) => {
@@ -2450,7 +2875,7 @@ function renderPortfolios(data) {
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
-  $("port-chart-sub").textContent = `${years}-year horizon vs S&P 500 11.5%/yr · ${data.universe || ""} · ${data.as_of || ""}`;
+  $("port-chart-sub").textContent = `${years}-year · line above the S&P has a risk-adjusted edge · ${data.universe || ""} · ${data.as_of || ""}`;
   const canvas = $("port-chart");
   try {
     const wrap = canvas.parentElement;
@@ -2466,28 +2891,26 @@ function renderPortfolios(data) {
   el.innerHTML = sleeves.map((s) => {
     const chips = (s.sectors || []).slice(0, 8).map((x) => `<span class="chip">${x.sector} <b>${pct(x.weight)}</b></span>`).join("");
     const dd = s.est_drawdown != null ? signedPct(s.est_drawdown) : "—";
-    const end10k = money(((s.path || []).slice(-1)[0] || {}).expected);
-    const beats = sleeveBeatsSpy(s, hurdle);
-    const edge = sleeveEdge(s, hurdle);
+    const risk = sleeveRisk(s, hurdle);
+    const beats = risk.raEdge > 0;
     const alloc = holdingsAllocation(s);
     return `<article class="port-card" id="port-${s.id}" style="--tier:${s.color}">
       <div class="port-card-top">
         <div class="port-card-head">
           <span class="tier-badge">${s.label}</span>
-          ${beats ? `<span class="spy-badge pos">Outruns S&amp;P 500</span>` : `<span class="spy-badge muted">Trails S&amp;P 500</span>`}
-          <h2>${signedPct(s.exp_total)} <small>over ${years} ${years === 1 ? "year" : "years"}</small></h2>
-          <div class="tagline">${s.tagline || ""}</div>
+          ${beats ? `<span class="spy-badge pos">Risk-adjusted edge</span>` : `<span class="spy-badge muted">No risk-adjusted edge</span>`}
+          <h2>${signedPct(risk.ra, 1)} <small>risk-adjusted /yr</small></h2>
+          <div class="tagline">${s.tagline || ""} · raw return ${signedPct(s.exp_ann, 1)}/yr</div>
         </div>
         <div class="port-hero-stat">
-          <div class="growth">${signedPct(s.exp_ann, 1)}<small>/yr</small></div>
-          <div class="hint">${signedPct(edge, 1)} vs 11.5% S&amp;P · ${s.n} names · $10k → ${end10k}</div>
+          <div class="growth ${risk.edge >= 0 ? "pos" : "neg"}">${signedPct(risk.edge, 1)}<small> edge</small></div>
+          <div class="hint">Sharpe ${risk.sharpe.toFixed(2)} vs S&amp;P ${risk.spySharpe.toFixed(2)} · vol ${pct(s.risk_vol)}</div>
         </div>
       </div>
-      ${bandRail(s)}
       <div class="port-stats">
-        <div class="kpi"><div class="lbl">Vs S&amp;P 500</div><div class="val ${beats ? "pos" : "neg"}">${signedPct(edge, 1)}</div><div class="kpi-sub">${beats ? "above 11.5%/yr" : "below 11.5%/yr"}</div></div>
-        <div class="kpi"><div class="lbl">Confidence</div><div class="val">${pct(s.confidence)}</div><div class="conf-meter"><div style="width:${Math.round(Number(s.confidence || 0) * 100)}%"></div></div></div>
-        <div class="kpi"><div class="lbl">Blended vol</div><div class="val">${pct(s.risk_vol)}</div></div>
+        <div class="kpi"><div class="lbl">Edge vs S&amp;P</div><div class="val ${risk.edge >= 0 ? "pos" : "neg"}">${signedPct(risk.edge, 1)}</div><div class="kpi-sub">return minus 11.5%/yr</div></div>
+        <div class="kpi"><div class="lbl">Risk-adjusted</div><div class="val ${beats ? "pos" : "neg"}">${signedPct(risk.ra, 1)}</div><div class="kpi-sub">${beats ? "above 11.5% at S&P risk" : "below 11.5% at S&P risk"}</div></div>
+        <div class="kpi"><div class="lbl">Blended vol</div><div class="val">${pct(s.risk_vol)}</div><div class="kpi-sub">S&amp;P long-run vol 16%</div></div>
         <div class="kpi"><div class="lbl">Est. drawdown</div><div class="val ${s.est_drawdown != null && s.est_drawdown < 0 ? "neg" : ""}">${dd}</div></div>
       </div>
       <div class="sector-chips">${chips}</div>
@@ -2536,9 +2959,11 @@ function writePortCache(uni, years, data) {
 }
 
 function portStatusLine(data, uni, years) {
-  const listed = (data.beats_spy || []).length || (data.sleeves || []).filter((s) => sleeveBeatsSpy(s, spyAnn(data))).length;
+  const hurdle = spyAnn(data);
+  const sleeves = uniqueSleeves((data.sleeves || []).filter((s) => Number(s.n || (s.holdings || []).length) > 0));
+  const winners = sleeves.filter((s) => sleeveRisk(s, hurdle).raEdge > 0).length;
   const label = UNIVERSE_LABEL[data.universe] || data.universe || uni;
-  return `${years}-year horizon · ${listed} sleeve${listed === 1 ? "" : "s"} above the S&P · ${data.n_candidates || 0} names scored from ${label} · ${data.as_of || ""}`;
+  return `${years}-year horizon · ${winners} with a risk-adjusted edge · ${sleeves.length} distinct sleeve${sleeves.length === 1 ? "" : "s"} · ${data.n_candidates || 0} names from ${label} · ${data.as_of || ""}`;
 }
 
 async function paintPortBook(uni, years) {
@@ -2874,6 +3299,22 @@ function bindUi() {
     });
   }
   if ($("volume-load")) $("volume-load").addEventListener("click", () => loadVolume());
+  if ($("ta-load")) $("ta-load").addEventListener("click", () => loadTaTicker(activeTicker()));
+  if ($("ta-scan")) $("ta-scan").addEventListener("click", () => loadTa({ mode: "universe" }));
+  if ($("ta-rating")) $("ta-rating").addEventListener("change", paintTa);
+  if ($("ta-q")) $("ta-q").addEventListener("input", paintTa);
+  if ($("ta-all")) {
+    $("ta-all").addEventListener("click", () => {
+      if ($("ta-rating")) $("ta-rating").value = "ALL";
+      if ($("ta-q")) $("ta-q").value = "";
+      paintTa();
+    });
+  }
+  if ($("period")) {
+    $("period").addEventListener("change", () => {
+      if (state.view === "ta") loadTa();
+    });
+  }
   if ($("port-load")) $("port-load").addEventListener("click", () => loadPortfolios(true));
   if ($("etf-load")) $("etf-load").addEventListener("click", () => loadEtfs(true));
   document.querySelectorAll("#port-years button").forEach((b) => {
@@ -2903,6 +3344,7 @@ function bindUi() {
     }
     if (state.view === "options") loadOptions({ autoRefresh: false });
     if (state.view === "volume") loadVolume({ autoRefresh: false });
+    if (state.view === "ta" && state.taMode === "universe") loadTa({ mode: "universe" });
     if (state.view === "portfolios") loadPortfolios(false);
   });
   $("scan-form").addEventListener("submit", async (e) => {
@@ -2978,7 +3420,7 @@ async function boot() {
     setView("financials");
     setFinFreq(finFreq());
     if (initial) loadFinancials(initial);
-  } else if (page === "options" || page === "volume" || page === "portfolios" || page === "etfs") showPage(page, false);
+  } else if (page === "options" || page === "volume" || page === "ta" || page === "portfolios" || page === "etfs") showPage(page, false);
   else setView("home");
   updatePeriodTags();
   applyViewMode(state.view);

@@ -349,6 +349,37 @@ def volume_refresh(body: ScanIn | None = None) -> dict[str, Any]:
     return start_volume_scan(universe=body.universe, year=body.year, month=body.month)
 
 
+@app.get("/ta")
+def technicals(
+    response: Response,
+    ticker: str | None = Query(default=None),
+    universe: str | None = Query(default=None),
+    period: str = Query(default="5y"),
+    cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=8, ge=1, le=12),
+) -> dict[str, Any]:
+    from aieq.ta import analyze_symbol, scan_universe
+
+    if ticker and ticker.strip():
+        try:
+            return _cached(
+                response,
+                "ta_api_v3_" + _safe_key(f"{ticker.strip().upper()}|{period}"),
+                20 * 60,
+                lambda: analyze_symbol(ticker, period=period, with_candles=True),
+                "public, max-age=60, s-maxage=600, stale-while-revalidate=3600",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return scan_universe(universe or "mega", period=period, cursor=cursor, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/portfolios")
 def portfolios(
     response: Response,

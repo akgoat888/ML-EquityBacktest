@@ -45,6 +45,11 @@ def volume_page():
     return _desk("volume", ticker=request.args.get("ticker", ""))
 
 
+@app.route("/ta")
+def ta_page():
+    return _desk("ta", ticker=request.args.get("ticker", ""))
+
+
 @app.route("/financials")
 @app.route("/financials/<path:ticker>")
 def financials_page(ticker: str = ""):
@@ -255,6 +260,30 @@ def api_volume_large():
     payload["job"] = get_volume_state()
     payload["min_notional"] = min_notional
     return jsonify(payload)
+
+
+@app.route("/api/ta")
+def api_ta():
+    from aieq.ta import analyze_symbol, scan_universe
+
+    ticker = (request.args.get("ticker") or "").strip()
+    period = (request.args.get("period") or "5y").strip()
+    if ticker:
+        try:
+            return jsonify(analyze_symbol(ticker, period=period, with_candles=True))
+        except Exception as exc:
+            return _json_error(exc)
+    try:
+        return jsonify(
+            scan_universe(
+                request.args.get("universe") or "mega",
+                period=period,
+                cursor=request.args.get("cursor", default=0, type=int) or 0,
+                limit=request.args.get("limit", default=8, type=int) or 8,
+            )
+        )
+    except Exception as exc:
+        return _json_error(exc, 500)
 
 
 @app.route("/api/volume/refresh", methods=["POST"])
