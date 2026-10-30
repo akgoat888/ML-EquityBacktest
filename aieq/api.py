@@ -364,7 +364,7 @@ def technicals(
         try:
             return _cached(
                 response,
-                "ta_api_v3_" + _safe_key(f"{ticker.strip().upper()}|{period}"),
+                "ta_api_v4_" + _safe_key(f"{ticker.strip().upper()}|{period}"),
                 20 * 60,
                 lambda: analyze_symbol(ticker, period=period, with_candles=True),
                 "public, max-age=60, s-maxage=600, stale-while-revalidate=3600",

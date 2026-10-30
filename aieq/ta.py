@@ -1,9 +1,13 @@
-"""Fibonacci swing signals confirmed by the 50-day, the 200-day, and volume.
+"""Fibonacci swing signals, plus a long-term buy at the 200-week average.
 
-A buy is an uptrend pullback into the 38.2–61.8% retracement of the last
-confirmed rally, with price still above the 200-day and volume not distributing.
-A sell is a downtrend rally into that same band, or a break of the swing low
-that also loses the 50-day. Extension prints on climax volume are trims.
+A daily buy is an uptrend pullback into the 38.2–61.8% retracement, with price
+still above the 200-day and volume not distributing. A sell is the mirror image
+in a downtrend.
+
+A strong buy is different. A large, profitable company that spent years above a
+flat or rising 200-week average, and is now under that line without distribution,
+is a strong buy. Microsoft under its 200-week average is the pattern. A falling
+200-week, a fund, or a business that does not earn its capital is not.
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from aieq.config import Settings
+from aieq.config import MEGA_LIQUID, Settings
 
 FIB_RETRACEMENTS: tuple[tuple[float, str], ...] = (
     (0.0, "0%"),
@@ -30,12 +34,16 @@ FIB_EXTENSIONS: tuple[tuple[float, str], ...] = (
 )
 PERIODS = {"2y", "5y", "10y", "max"}
 NOTE = (
-    "Buy and sell come from the last confirmed swing. "
-    "A buy needs price above the 200-day, the 50-day above the 200-day, "
-    "and price in the 38.2–61.8% retracement with volume not distributing. "
-    "A sell needs the mirror image in a downtrend, or a lost swing low under the 50-day. "
-    "This is a rules signal, not a guarantee."
+    "Daily buys are Fibonacci pullbacks that hold the 200-day, with the 50-day above it and volume not distributing. "
+    "A strong buy is a large profitable company under a flat or rising 200-week average after years above that line. "
+    "A falling 200-week is not that buy. This is a rules signal, not a guarantee."
 )
+# Funds are not companies. A dip under the 200-week does not make SPY a franchise.
+FUNDS = {
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "HYG", "SMH",
+    "XLE", "XLF", "XLK", "XLV", "XLI", "XLP", "XLY", "XLB", "XLU", "XLRE",
+}
+_MEGA = {sym.upper() for sym in MEGA_LIQUID}
 
 
 def _finite(value: Any) -> float | None:
@@ -298,6 +306,91 @@ def _ladder(start: float, end: float, *, bull: bool, volume_state: str, close: f
     return rows
 
 
+def weekly_context(close: pd.Series) -> dict[str, Any]:
+    """200-week average, and whether price is a leadership name now under it.
+
+    Structural means the weekly line is flat or rising, price is under it but
+    not more than 30% through it, and most of the prior two years closed above it.
+    """
+    out: dict[str, Any] = {
+        "ready": False,
+        "structural": False,
+        "wma_200": None,
+        "dist_wma_200": None,
+        "slope_26w": None,
+        "above_share": None,
+    }
+    if not isinstance(close.index, pd.DatetimeIndex) or len(close) < 200:
+        return out
+    weekly = close.resample("W-FRI").last().dropna()
+    if len(weekly) < 200:
+        return out
+    ma = weekly.rolling(200, min_periods=200).mean()
+    last_ma = _finite(ma.iloc[-1])
+    last_px = _finite(close.iloc[-1])
+    if last_ma is None or last_ma <= 0 or last_px is None:
+        return out
+    out["ready"] = True
+    out["wma_200"] = last_ma
+    out["dist_wma_200"] = last_px / last_ma - 1.0
+    if len(ma) >= 226:
+        prev = _finite(ma.iloc[-27])
+        if prev and prev > 0:
+            out["slope_26w"] = last_ma / prev - 1.0
+    hist_px = weekly.iloc[-105:-1]
+    hist_ma = ma.iloc[-105:-1]
+    mask = hist_ma.notna()
+    if int(mask.sum()) >= 30:
+        out["above_share"] = float((hist_px[mask].to_numpy() > hist_ma[mask].to_numpy()).mean())
+    dist = out["dist_wma_200"]
+    slope = out["slope_26w"]
+    share = out["above_share"]
+    out["structural"] = bool(
+        dist is not None
+        and dist < 0
+        and dist >= -0.30
+        and slope is not None
+        and slope >= -0.015
+        and share is not None
+        and share >= 0.70
+    )
+    return out
+
+
+def judge_franchise(ticker: str | None, fundamentals: dict[str, Any] | None) -> bool:
+    """Large and profitable. A fund, or a business that does not earn, is out."""
+    sym = (ticker or "").strip().upper()
+    if not sym or sym in FUNDS:
+        return False
+    if not fundamentals:
+        return sym in _MEGA
+    try:
+        cap = _finite(fundamentals.get("market_cap"))
+        roe = _finite(fundamentals.get("roe"))
+        margin = _finite(fundamentals.get("profit_margin"))
+    except Exception:
+        return sym in _MEGA
+    if cap is not None and cap < 10_000_000_000:
+        return False
+    profitable = (roe is not None and roe >= 0.12) or (margin is not None and margin >= 0.10)
+    if roe is None and margin is None and cap is not None and cap >= 50_000_000_000:
+        profitable = True
+    if roe is None and margin is None and cap is None:
+        return sym in _MEGA
+    return profitable
+
+
+def _weekly_ma_daily(index: pd.Index, close: np.ndarray) -> np.ndarray:
+    blank = np.full(len(close), np.nan)
+    if not isinstance(index, pd.DatetimeIndex) or len(close) < 200:
+        return blank
+    series = pd.Series(close, index=index)
+    weekly = series.resample("W-FRI").last()
+    ma = weekly.rolling(200, min_periods=200).mean()
+    aligned = ma.reindex(series.index, method="ffill")
+    return aligned.to_numpy(dtype=float)
+
+
 def _zone_name(ratio: float | None) -> str:
     if ratio is None:
         return "—"
@@ -316,6 +409,40 @@ def _zone_name(ratio: float | None) -> str:
     return "Beyond the swing"
 
 
+def _weekly_call(volume_state: str, structural: bool, quality: bool) -> dict[str, Any] | None:
+    """Strong buy when a franchise is under the 200-week. Distribution stands aside."""
+    if not structural or not quality:
+        return None
+    if volume_state in {"Distribution", "Climax down"}:
+        return {
+            "action": "HOLD",
+            "rating": "HOLD",
+            "trend": "UP",
+            "zone": "Under the 200-week",
+            "confidence": 55,
+            "score": 55.0,
+            "why": (
+                "This is a large profitable company under a flat or rising 200-week average, "
+                "but volume is distributing. Stand aside."
+            ),
+            "weekly_buy": False,
+        }
+    return {
+        "action": "BUY",
+        "rating": "HIGH BUY",
+        "trend": "UP",
+        "zone": "Under the 200-week",
+        "confidence": 84,
+        "score": 96.0,
+        "why": (
+            "Strong buy. A large profitable company is under its 200-week average, "
+            "that average is flat or rising, and the stock spent the prior years above it. "
+            "Volume is not distributing."
+        ),
+        "weekly_buy": True,
+    }
+
+
 def decide_signal(
     *,
     close: float,
@@ -326,10 +453,17 @@ def decide_signal(
     volume_state: str,
     bars: int,
     span: float | None,
+    weekly: dict[str, Any] | None = None,
+    quality: bool = False,
 ) -> dict[str, Any]:
-    """Confluence of Fibonacci zone, 50/200 stack, and volume."""
+    """Confluence of Fibonacci, the 50/200-day stack, volume, and the 200-week buy."""
     notes: list[str] = []
+    weekly = weekly or {}
+    structural = bool(weekly.get("structural"))
+    long_buy = _weekly_call(volume_state, structural, quality)
     if bars < 60 or ma50 is None or ratio is None or span is None or span <= 0:
+        if long_buy:
+            return long_buy
         return {
             "action": "HOLD",
             "rating": "HOLD",
@@ -337,6 +471,7 @@ def decide_signal(
             "zone": _zone_name(ratio),
             "confidence": 20,
             "why": "Not enough history for a 50-day, a 200-day, and a confirmed swing.",
+            "weekly_buy": False,
         }
 
     above50 = close > ma50
@@ -425,11 +560,21 @@ def decide_signal(
         else:
             notes.append("The 50-day and 200-day disagree. No trade until they stack with a Fibonacci level.")
 
-    if action == "BUY" and ma200 is not None and not above200:
+    if action == "BUY" and ma200 is not None and not above200 and not (long_buy and long_buy.get("weekly_buy")):
         action, rating = "HOLD", "HOLD"
         notes.append("Fibonacci says buy, but price is under the 200-day.")
-    if rating == "HIGH BUY" and not (golden and above200 and vol_confirms_buy):
+    if rating == "HIGH BUY" and not (long_buy and long_buy.get("weekly_buy")) and not (golden and above200 and vol_confirms_buy):
         rating = "BUY"
+    if long_buy and long_buy.get("weekly_buy"):
+        action = long_buy["action"]
+        rating = long_buy["rating"]
+        trend = long_buy["trend"]
+        notes = [long_buy["why"]]
+    elif long_buy:
+        action = long_buy["action"]
+        rating = long_buy["rating"]
+        trend = long_buy["trend"]
+        notes.insert(0, long_buy["why"])
     if action == "SELL" and golden and above200 and not (broken and not above50) and volume_state != "Climax up":
         action, rating = "HOLD", "HOLD"
         notes.append("Sell was vetoed: the 50-day is still above the 200-day and price is above the 200-day.")
@@ -463,14 +608,18 @@ def decide_signal(
         confidence = max(confidence, 75)
 
     score_base = {"HIGH BUY": 90, "BUY": 70, "HOLD": 50, "SELL": 30, "HIGH SELL": 10}[rating]
+    zone = long_buy["zone"] if long_buy else _zone_name(ratio)
+    if long_buy and long_buy.get("weekly_buy"):
+        confidence = max(confidence, 84)
     return {
         "action": action,
         "rating": rating,
         "trend": trend,
-        "zone": _zone_name(ratio),
+        "zone": zone,
         "confidence": confidence,
-        "score": score_base + confidence / 100.0,
+        "score": (long_buy["score"] if long_buy and long_buy.get("weekly_buy") else score_base + confidence / 100.0),
         "why": " ".join(notes),
+        "weekly_buy": bool(long_buy and long_buy.get("weekly_buy")),
     }
 
 
@@ -480,7 +629,24 @@ def _dates(index: pd.Index) -> list[str]:
     return [str(item)[:10] for item in index]
 
 
-def analyze_frame(frame: pd.DataFrame, *, with_candles: bool = False) -> dict[str, Any]:
+def _fundamentals_for(ticker: str) -> dict[str, Any] | None:
+    try:
+        from aieq.data import fetch_fundamentals
+
+        data = fetch_fundamentals(ticker)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def analyze_frame(
+    frame: pd.DataFrame,
+    *,
+    with_candles: bool = False,
+    ticker: str | None = None,
+    fundamentals: dict[str, Any] | None = None,
+    fetch_quality: bool = False,
+) -> dict[str, Any]:
     """Signal for one OHLCV frame. Missing inputs come back as HOLD, not an exception."""
     empty = {
         "ok": False,
@@ -495,8 +661,11 @@ def analyze_frame(frame: pd.DataFrame, *, with_candles: bool = False) -> dict[st
         "close": None,
         "sma_50": None,
         "sma_200": None,
+        "wma_200": None,
         "dist_sma_50": None,
         "dist_sma_200": None,
+        "dist_wma_200": None,
+        "weekly_buy": False,
         "ma_state": "—",
         "volume_state": "Neutral",
         "volume_ratio": None,
@@ -536,6 +705,14 @@ def analyze_frame(frame: pd.DataFrame, *, with_candles: bool = False) -> dict[st
     atr = _atr(high, low, close)
     ma50 = _sma(close, 50)
     ma200 = _sma(close, 200)
+    weekly = weekly_context(df["close"])
+    wma_daily = _weekly_ma_daily(df.index, close)
+    if weekly.get("structural"):
+        if fundamentals is None and fetch_quality and ticker:
+            fundamentals = _fundamentals_for(ticker)
+        quality = judge_franchise(ticker, fundamentals)
+    else:
+        quality = False
     last = float(close[-1])
     last_atr = _finite(atr[-1]) or last * 0.02
     last_ma50 = _finite(ma50[-1])
@@ -595,6 +772,8 @@ def analyze_frame(frame: pd.DataFrame, *, with_candles: bool = False) -> dict[st
         volume_state=str(vol["volume_state"]),
         bars=len(df),
         span=span,
+        weekly=weekly,
+        quality=quality,
     )
     if last_ma50 is not None and last_ma200 is not None:
         if last_ma50 > last_ma200:
@@ -619,8 +798,12 @@ def analyze_frame(frame: pd.DataFrame, *, with_candles: bool = False) -> dict[st
         "close": _round(last, 4),
         "sma_50": _round(last_ma50, 4),
         "sma_200": _round(last_ma200, 4),
+        "wma_200": _round(weekly.get("wma_200"), 4),
         "dist_sma_50": _round((last / last_ma50 - 1.0) if last_ma50 else None, 4),
         "dist_sma_200": _round((last / last_ma200 - 1.0) if last_ma200 else None, 4),
+        "dist_wma_200": _round(weekly.get("dist_wma_200"), 4),
+        "weekly_buy": bool(decision.get("weekly_buy")),
+        "weekly_slope": _round(weekly.get("slope_26w"), 4),
         "ma_state": ma_state,
         "volume_state": vol["volume_state"],
         "volume_ratio": vol["volume_ratio"],
@@ -645,6 +828,7 @@ def analyze_frame(frame: pd.DataFrame, *, with_candles: bool = False) -> dict[st
                 "close": _round(close[i], 4),
                 "sma50": _round(ma50[i], 4),
                 "sma200": _round(ma200[i], 4),
+                "wma200": _round(wma_daily[i], 4),
             }
             for i in range(len(close))[tail]
         ]
@@ -672,6 +856,21 @@ def _error_row(ticker: str, message: str) -> dict[str, Any]:
     }
 
 
+def _frame_for(ticker: str, period: str) -> pd.DataFrame:
+    """Use a longer history when the selected window cannot build a 200-week average."""
+    from aieq.data import fetch_ohlcv
+
+    frame = fetch_ohlcv(ticker, Settings(period=period))
+    if frame is None or frame.empty or period == "max":
+        return frame
+    if weekly_context(frame["close"]).get("ready"):
+        return frame
+    longer = fetch_ohlcv(ticker, Settings(period="max"))
+    if longer is not None and not longer.empty and len(longer) > len(frame):
+        return longer
+    return frame
+
+
 def analyze_symbol(ticker: str, *, period: str = "5y", with_candles: bool = True) -> dict[str, Any]:
     from aieq.symbols import resolve_symbol
 
@@ -679,20 +878,19 @@ def analyze_symbol(ticker: str, *, period: str = "5y", with_candles: bool = True
     resolved, tried = resolve_symbol(queried)
     if not resolved:
         raise ValueError(f"No listing for {queried!r}. Tried: {', '.join(tried) or 'nothing'}.")
-    from aieq.data import fetch_ohlcv
     from aieq.memcache import get_mem, put_mem
 
     period = period if period in PERIODS else "5y"
-    key = f"ta_v3_{resolved}_{period}_{int(with_candles)}"
+    key = f"ta_v4_{resolved}_{period}_{int(with_candles)}"
     hit = get_mem(key, 20 * 60)
     if isinstance(hit, dict):
         out = dict(hit)
         out["queried"] = queried
         return out
-    frame = fetch_ohlcv(resolved, Settings(period=period))
+    frame = _frame_for(resolved, period)
     if frame is None or frame.empty:
         raise ValueError(f"No price history for {resolved}.")
-    payload = analyze_frame(frame, with_candles=with_candles)
+    payload = analyze_frame(frame, with_candles=with_candles, ticker=resolved, fetch_quality=True)
     payload["ticker"] = resolved
     payload["queried"] = queried
     put_mem(key, payload)
@@ -700,21 +898,20 @@ def analyze_symbol(ticker: str, *, period: str = "5y", with_candles: bool = True
 
 
 def _analyze_known(ticker: str, period: str) -> dict[str, Any]:
-    from aieq.data import fetch_ohlcv
     from aieq.memcache import get_mem, put_mem
 
-    key = f"ta_v3_{ticker}_{period}_0"
+    key = f"ta_v4_{ticker}_{period}_0"
     hit = get_mem(key, 20 * 60)
     if isinstance(hit, dict):
         return hit
     try:
-        frame = fetch_ohlcv(ticker, Settings(period=period))
+        frame = _frame_for(ticker, period)
     except Exception as exc:
         return _error_row(ticker, str(exc))
     if frame is None or frame.empty:
         return _error_row(ticker, "No price history.")
     try:
-        payload = analyze_frame(frame, with_candles=False)
+        payload = analyze_frame(frame, with_candles=False, ticker=ticker, fetch_quality=True)
     except Exception as exc:
         return _error_row(ticker, str(exc))
     payload["ticker"] = ticker

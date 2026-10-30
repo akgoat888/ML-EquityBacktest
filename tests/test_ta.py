@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aieq.ta import analyze_frame, decide_signal, fib_price
+from aieq.ta import analyze_frame, decide_signal, fib_price, judge_franchise, weekly_context
 
 
 def frame_from_close(close, volume=None) -> pd.DataFrame:
@@ -129,6 +129,68 @@ class DecideTests(unittest.TestCase):
             span=None,
         )
         self.assertEqual(out["action"], "HOLD")
+
+
+MSFT = {"market_cap": 3_000_000_000_000, "roe": 0.35, "profit_margin": 0.36}
+
+
+def compounder_dip(volume=None):
+    """Years above a rising 200-week line, then a drop through it. The Microsoft shape."""
+    rise = _ramp(40, 220, 1700)
+    crash = _ramp(220, 130, 40)
+    close = np.concatenate([rise, crash])
+    if volume is None:
+        volume = np.concatenate([
+            np.full(len(rise), 1_000_000.0),
+            np.linspace(900_000, 500_000, len(crash)),
+        ])
+    return frame_from_close(close, volume)
+
+
+class WeeklyBuyTests(unittest.TestCase):
+    def test_microsoft_shape_is_a_strong_buy(self):
+        frame = compounder_dip()
+        ctx = weekly_context(frame["close"])
+        self.assertTrue(ctx["structural"], ctx)
+        self.assertLess(ctx["dist_wma_200"], 0)
+        out = analyze_frame(frame, ticker="MSFT", fundamentals=MSFT)
+        self.assertTrue(out["weekly_buy"])
+        self.assertEqual(out["action"], "BUY")
+        self.assertEqual(out["rating"], "HIGH BUY")
+        self.assertIn("200-week", out["why"])
+        self.assertLess(out["close"], out["wma_200"])
+
+    def test_distribution_blocks_the_weekly_buy(self):
+        rise = _ramp(40, 220, 1700)
+        crash = _ramp(220, 130, 40)
+        close = np.concatenate([rise, crash])
+        volume = np.concatenate([
+            np.full(len(rise), 1_000_000.0),
+            np.full(len(crash), 4_000_000.0),
+        ])
+        out = analyze_frame(frame_from_close(close, volume), ticker="MSFT", fundamentals=MSFT)
+        self.assertFalse(out["weekly_buy"])
+        self.assertNotEqual(out["rating"], "HIGH BUY")
+
+    def test_fund_is_not_a_company(self):
+        self.assertFalse(judge_franchise("SPY", MSFT))
+        out = analyze_frame(compounder_dip(), ticker="SPY", fundamentals=MSFT)
+        self.assertFalse(out["weekly_buy"])
+
+    def test_unprofitable_small_cap_is_not_a_strong_buy(self):
+        weak = {"market_cap": 1_200_000_000, "roe": 0.02, "profit_margin": 0.01}
+        self.assertFalse(judge_franchise("TINY", weak))
+        out = analyze_frame(compounder_dip(), ticker="TINY", fundamentals=weak)
+        self.assertFalse(out["weekly_buy"])
+
+    def test_falling_200_week_is_not_a_strong_buy(self):
+        up = _ramp(40, 100, 400)
+        down = _ramp(100, 35, 1500)
+        frame = frame_from_close(np.concatenate([up, down]))
+        ctx = weekly_context(frame["close"])
+        self.assertFalse(ctx["structural"], ctx)
+        out = analyze_frame(frame, ticker="MSFT", fundamentals=MSFT)
+        self.assertFalse(out["weekly_buy"])
 
 
 class FrameTests(unittest.TestCase):

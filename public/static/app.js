@@ -454,7 +454,7 @@ const VIEW_META = {
   dive: { title: "Analysis", sub: "Ticker analysis" },
   options: { title: "Options · AI Equities Desk", sub: "Options · Call/Put premium ≥ $1M" },
   volume: { title: "Volume · AI Equities Desk", sub: "Volume · concentrated $10M+ prints" },
-  ta: { title: "TA · AI Equities Desk", sub: "TA · Fibonacci, 50-day, 200-day, volume" },
+  ta: { title: "TA · AI Equities Desk", sub: "TA · Fibonacci, 200-week strong buys, volume" },
   financials: { title: "Financials · AI Equities Desk", sub: "Financials · statements + stance" },
   portfolios: { title: "Portfolios · AI Equities Desk", sub: "Portfolios · four risk tiers per horizon" },
   etfs: { title: "ETFs · AI Equities Desk", sub: "ETFs · funds expected to outrun the S&P 500" },
@@ -2132,7 +2132,9 @@ const TA_NAME_COLS = [
   { key: "close", label: "Price", num: true },
   { key: "sma_50", label: "50-day", num: true },
   { key: "sma_200", label: "200-day", num: true },
-  { key: "dist_sma_200", label: "vs 200", num: true },
+  { key: "dist_sma_200", label: "vs 200d", num: true },
+  { key: "wma_200", label: "200-week", num: true },
+  { key: "dist_wma_200", label: "vs 200w", num: true },
   { key: "volume_state", label: "Volume" },
   { key: "volume_ratio", label: "Vol ×", num: true },
   { key: "score", label: "Score", num: true },
@@ -2164,6 +2166,8 @@ function renderTaKpis() {
       { lbl: "50-day", val: fmt(d.sma_50) },
       { lbl: "200-day", val: fmt(d.sma_200) },
       { lbl: "vs 200-day", val: signedPct(d.dist_sma_200), cls: signedTone(d.dist_sma_200) },
+      { lbl: "200-week", val: fmt(d.wma_200) },
+      { lbl: "vs 200-week", val: signedPct(d.dist_wma_200), cls: d.weekly_buy ? "pos" : signedTone(d.dist_wma_200) },
       { lbl: "Retrace", val: d.fib_ratio == null ? "—" : (Number(d.fib_ratio) * 100).toFixed(1) + "%" },
       { lbl: "Volume", val: d.volume_state || "—", cls: d.volume_state === "Distribution" || d.volume_state === "Climax down" ? "neg" : "" },
     ];
@@ -2237,6 +2241,7 @@ function taChart(canvas, candles, levels, close) {
     { label: "Close", data: candles.map((c) => c.close), borderColor: "#58a6ff", pointRadius: 0, borderWidth: 2, tension: 0.12, fill: false },
     { label: "50-day", data: candles.map((c) => c.sma50), borderColor: "#e3b341", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
     { label: "200-day", data: candles.map((c) => c.sma200), borderColor: "#c9d1d9", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
+    { label: "200-week", data: candles.map((c) => c.wma200), borderColor: "#d2a8ff", pointRadius: 0, borderWidth: 1.6, spanGaps: true, tension: 0.05, fill: false },
   ];
   shown.forEach((lv) => {
     const color = lv.action === "BUY" ? "rgba(61,220,151,.9)" : lv.action === "SELL" ? "rgba(255,107,107,.85)" : "rgba(139,151,168,.45)";
@@ -2258,7 +2263,7 @@ function taChart(canvas, candles, levels, close) {
         legend: {
           labels: {
             color: "#c9d1d9",
-            filter: (item) => item.text === "Close" || item.text === "50-day" || item.text === "200-day",
+            filter: (item) => ["Close", "50-day", "200-day", "200-week"].includes(item.text),
           },
         },
       },
@@ -2351,6 +2356,8 @@ function paintTa() {
       <td class="num">${fmt(r.sma_50)}</td>
       <td class="num">${fmt(r.sma_200)}</td>
       <td class="num ${signedTone(r.dist_sma_200)}">${signedPct(r.dist_sma_200)}</td>
+      <td class="num">${fmt(r.wma_200)}</td>
+      <td class="num ${r.weekly_buy ? "pos" : signedTone(r.dist_wma_200)}">${signedPct(r.dist_wma_200)}</td>
       <td>${esc(r.volume_state || "—")}</td>
       <td class="num">${r.volume_ratio == null ? "—" : Number(r.volume_ratio).toFixed(1) + "×"}</td>
       <td class="num">${r.score == null ? "—" : Number(r.score).toFixed(0)}</td>
