@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Equities Desk</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261030e" />
+  <link rel="stylesheet" href="/static/style.css?v=20261030g" />
 </head>
 <body data-api="" data-page="" data-ticker="" data-period="5y" data-horizon="5">
 <script>
@@ -261,22 +261,6 @@
       <div class="chart-canvas"><canvas id="ta-chart"></canvas></div>
     </div>
     <div class="board-count" id="ta-count"></div>
-    <div id="ta-orders" class="gtc-panel" hidden>
-      <div class="gtc-bar">
-        <span class="gtc-kicker">GTC</span>
-        <label>Size
-          <input id="gtc-size" type="number" min="1" max="100" step="1" value="25" inputmode="decimal" />
-          <span class="hint">%</span>
-        </label>
-        <label>Limit
-          <input id="gtc-limit" type="number" min="0" step="0.01" placeholder="130" inputmode="decimal" />
-        </label>
-        <button type="button" class="gtc-buy" id="gtc-buy">Buy</button>
-        <button type="button" class="gtc-sell" id="gtc-sell">Sell</button>
-        <span class="hint">Both buttons are on every Fibonacci price. Size is a percent of the position, for example 25% at 130. These stay on this desk.</span>
-      </div>
-      <div id="gtc-book"></div>
-    </div>
     <div id="ta-list"></div>
   </section>
 
@@ -396,6 +380,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js?v=20261030e"></script>
+  <script src="/static/app.js?v=20261030g"></script>
 </body>
 </html>
