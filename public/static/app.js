@@ -332,8 +332,11 @@ async function api(path, opts = {}) {
 }
 
 function killCharts() {
-  state.charts.forEach((c) => c.destroy());
+  state.charts.forEach((c) => {
+    try { c.destroy(); } catch { /* already destroyed */ }
+  });
   state.charts = [];
+  state.taChart = null;
 }
 
 function money(n) {
@@ -694,9 +697,29 @@ function tickerUrl(ticker) {
   return "/ticker/" + encodeURIComponent(ticker) + "?" + params.toString();
 }
 
+function viewLabel(name) {
+  return {
+    home: "the board",
+    ta: "TA",
+    options: "Options",
+    volume: "Volume",
+    financials: "Financials",
+    portfolios: "Portfolios",
+    etfs: "ETFs",
+  }[name] || "the previous page";
+}
+
+function returnToPrevious() {
+  const dest = state.backView || "home";
+  state.backView = "";
+  if (dest === "home") showHome(true);
+  else showPage(dest, true);
+}
+
 function openTicker(ticker, { push = true } = {}) {
   const t = rememberTicker(ticker);
   if (!t) return;
+  if (state.view !== "dive") state.backView = state.view;
   pushRecent(t);
   showQuote(t);
   setView("dive", { ticker: t });
@@ -1611,6 +1634,7 @@ function renderDive(res) {
   const blurbHtml = blurb ? `<div class="company-blurb">${blurb}</div>` : "";
   const sectorHtml = sector ? `<div class="company-sector">${sector}</div>` : "";
   $("dive").innerHTML = `
+    <div class="back-row"><button type="button" class="ghost" id="dive-back">Back to ${esc(viewLabel(state.backView))}</button></div>
     <div class="dive-hero hero">
       ${resolved}
       <div class="dive-hero-top">
@@ -1689,6 +1713,8 @@ function renderDive(res) {
   `;
   $("dive").hidden = false;
   $("dive-empty").hidden = true;
+  const diveBack = $("dive-back");
+  if (diveBack) diveBack.addEventListener("click", returnToPrevious);
   if (state.quoteTicker === (res.ticker || "") || $("live-quote").innerHTML) {
     const live = $("live-quote");
     const divePx = $("dive-live-px");
@@ -2228,71 +2254,137 @@ function renderTaSummary(detail) {
     </div>`;
 }
 
-function taChart(canvas, candles, levels, close) {
-  if (!canvas || typeof Chart === "undefined" || !(candles || []).length) return;
-  destroyTaChart();
-  const labels = candles.map((c) => c.date);
-  const shown = (levels || []).filter((lv) => {
-    if (lv.kind !== "extension") return true;
-    if (!close || lv.price == null) return false;
-    return Math.abs(lv.price - close) / close < 0.12 || lv.active;
-  });
-  const datasets = [
-    { label: "Close", data: candles.map((c) => c.close), borderColor: "#58a6ff", pointRadius: 0, borderWidth: 2, tension: 0.12, fill: false },
-    { label: "50-day", data: candles.map((c) => c.sma50), borderColor: "#e3b341", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
-    { label: "200-day", data: candles.map((c) => c.sma200), borderColor: "#c9d1d9", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
-    { label: "200-week", data: candles.map((c) => c.wma200), borderColor: "#d2a8ff", pointRadius: 0, borderWidth: 1.6, spanGaps: true, tension: 0.05, fill: false },
-  ];
-  shown.forEach((lv) => {
-    const color = lv.action === "BUY" ? "rgba(61,220,151,.9)" : lv.action === "SELL" ? "rgba(255,107,107,.85)" : "rgba(139,151,168,.45)";
-    datasets.push({
-      label: `${lv.label} ${lv.action}`,
-      data: labels.map(() => lv.price),
-      borderColor: color,
-      borderDash: lv.active ? [] : [5, 4],
-      borderWidth: lv.active ? 2 : 1,
-      pointRadius: 0,
-      fill: false,
-    });
-  });
-  state.taChart = new Chart(canvas, {
-    type: "line",
-    data: { labels, datasets },
-    options: {
-      plugins: {
-        legend: {
-          labels: {
-            color: "#c9d1d9",
-            filter: (item) => ["Close", "50-day", "200-day", "200-week"].includes(item.text),
-          },
-        },
-      },
-      scales: {
-        x: { ticks: { color: "#8b949e", maxTicksLimit: 8 }, grid: { color: "#21262d" } },
-        y: { ticks: { color: "#8b949e" }, grid: { color: "#30363d" } },
-      },
-    },
-  });
-  state.charts.push(state.taChart);
+function finiteOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
-function paintTa() {
+function taChart(candles, levels) {
+  const wrap = $("ta-chart-wrap");
+  const sub = $("ta-chart-sub");
+  if (typeof Chart === "undefined" || !(candles || []).length) {
+    if (sub) sub.textContent = typeof Chart === "undefined" ? "Chart library did not load." : "";
+    return;
+  }
+  if (wrap) wrap.hidden = false;
+  const token = (state.taDraw = (state.taDraw || 0) + 1);
+  requestAnimationFrame(() => {
+    if (token !== state.taDraw || state.view !== "ta" || state.taMode !== "ticker") return;
+    const canvas = $("ta-chart");
+    if (!canvas) return;
+    try {
+      const prior = Chart.getChart(canvas);
+      if (prior) prior.destroy();
+      destroyTaChart();
+      const labels = candles.map((c) => c.date);
+      const close = candles.map((c) => finiteOrNull(c.close));
+      const sma50 = candles.map((c) => finiteOrNull(c.sma50));
+      const sma200 = candles.map((c) => finiteOrNull(c.sma200));
+      const wma200 = candles.map((c) => finiteOrNull(c.wma200));
+      const ys = close.concat(sma50, sma200, wma200).filter((n) => n != null);
+      let yMin;
+      let yMax;
+      if (ys.length) {
+        const lo = Math.min(...ys);
+        const hi = Math.max(...ys);
+        const pad = Math.max((hi - lo) * 0.06, hi * 0.02);
+        yMin = lo - pad;
+        yMax = hi + pad;
+      }
+      const datasets = [
+        { label: "Close", data: close, borderColor: "#58a6ff", pointRadius: 0, borderWidth: 2, tension: 0.12, fill: false, spanGaps: true },
+        { label: "50-day", data: sma50, borderColor: "#e3b341", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
+        { label: "200-day", data: sma200, borderColor: "#c9d1d9", pointRadius: 0, borderWidth: 1.5, spanGaps: true, tension: 0.08, fill: false },
+        { label: "200-week", data: wma200, borderColor: "#d2a8ff", pointRadius: 0, borderWidth: 1.6, spanGaps: true, tension: 0.05, fill: false },
+      ];
+      (levels || []).forEach((lv) => {
+        const price = finiteOrNull(lv.price);
+        if (price == null) return;
+        if (yMin != null && (price < yMin || price > yMax) && !lv.active) return;
+        const color = lv.action === "BUY" ? "rgba(61,220,151,.9)" : lv.action === "SELL" ? "rgba(255,107,107,.85)" : "rgba(139,151,168,.55)";
+        datasets.push({
+          label: `${lv.label} ${lv.action}`,
+          data: labels.map(() => price),
+          borderColor: color,
+          borderDash: lv.active ? [] : [5, 4],
+          borderWidth: lv.active ? 2 : 1,
+          pointRadius: 0,
+          fill: false,
+        });
+      });
+      state.taChart = new Chart(canvas, {
+        type: "line",
+        data: { labels, datasets },
+        options: {
+          animation: false,
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              labels: {
+                color: "#c9d1d9",
+                filter: (item) => ["Close", "50-day", "200-day", "200-week"].includes(item.text),
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: "#8b949e", maxTicksLimit: 8 }, grid: { color: "#21262d" } },
+            y: {
+              min: yMin,
+              max: yMax,
+              ticks: { color: "#8b949e" },
+              grid: { color: "#30363d" },
+            },
+          },
+        },
+      });
+      state.charts.push(state.taChart);
+      requestAnimationFrame(() => {
+        if (state.taChart && token === state.taDraw) state.taChart.resize();
+      });
+    } catch (err) {
+      if (sub) sub.textContent = err && err.message ? err.message : "Chart failed to draw.";
+    }
+  });
+}
+
+function showTaList() {
+  state.taMode = "universe";
+  state.taDetail = null;
+  state.taDraw = (state.taDraw || 0) + 1;
+  destroyTaChart();
+  const wrap = $("ta-chart-wrap");
+  if (wrap) wrap.hidden = true;
+  if ($("ta-back")) $("ta-back").hidden = true;
+  if (location.pathname === "/ta") history.replaceState({ view: "ta" }, "", "/ta");
+  if ((state.taRows || []).length) {
+    $("ta-empty").hidden = true;
+    $("ta-status").textContent = `${state.taRows.length} names from the last scan`;
+    paintTa();
+    return;
+  }
+  loadTaUniverse();
+}
+
+function paintTa({ keepChart = false } = {}) {
   const list = $("ta-list");
   if (!list) return;
   renderTaKpis();
   const filters = $("ta-filters");
   const chartWrap = $("ta-chart-wrap");
+  const back = $("ta-back");
   if (state.taMode === "ticker" && state.taDetail) {
     if (filters) filters.hidden = true;
+    if (back) back.hidden = false;
     const detail = state.taDetail;
     renderTaSummary(detail);
     const levels = detail.levels || [];
     if (chartWrap) {
       chartWrap.hidden = !(detail.candles || []).length;
       const sub = $("ta-chart-sub");
-      if (sub) sub.textContent = detail.volume_ratio != null ? `Volume ${detail.volume_ratio}× the 20-day` : "";
+      if (sub && !keepChart) sub.textContent = detail.volume_ratio != null ? `Volume ${detail.volume_ratio}× the 20-day` : "";
     }
-    taChart($("ta-chart"), detail.candles || [], levels, detail.close);
+    if (!keepChart) taChart(detail.candles || [], levels);
     const count = $("ta-count");
     if (count) count.innerHTML = levels.length ? `<b>${levels.length}</b> Fibonacci levels` : "";
     if (!levels.length) {
@@ -2316,9 +2408,10 @@ function paintTa() {
         <td class="${taActionClass(lv.action)}">${esc(lv.action)}</td>
         <td>${esc(lv.note || "")}${lv.active ? " · price is here" : ""}</td>
       </tr>`).join("")}</tbody></table></div></div>`;
-    bindSortHeaders(list, state.taSort, paintTa);
+    bindSortHeaders(list, state.taSort, () => paintTa({ keepChart: true }));
     return;
   }
+  if (back) back.hidden = true;
   if (filters) filters.hidden = false;
   renderTaSummary(null);
   destroyTaChart();
@@ -2468,11 +2561,18 @@ async function loadTaUniverse() {
   }
 }
 
-function loadTa({ mode } = {}) {
+function loadTa({ mode, force } = {}) {
   if (mode) state.taMode = mode;
   else if (!state.taMode) state.taMode = activeTicker() ? "ticker" : "universe";
-  if (state.taMode === "universe" || !activeTicker()) return loadTaUniverse();
-  return loadTaTicker(activeTicker());
+  if (state.taMode === "ticker" && activeTicker()) return loadTaTicker(activeTicker());
+  if (!force && (state.taRows || []).length) {
+    state.taMode = "universe";
+    state.taDetail = null;
+    if ($("ta-empty")) $("ta-empty").hidden = true;
+    paintTa();
+    return;
+  }
+  return loadTaUniverse();
 }
 
 function stmtTable(title, stmt) {
@@ -3307,7 +3407,8 @@ function bindUi() {
   }
   if ($("volume-load")) $("volume-load").addEventListener("click", () => loadVolume());
   if ($("ta-load")) $("ta-load").addEventListener("click", () => loadTaTicker(activeTicker()));
-  if ($("ta-scan")) $("ta-scan").addEventListener("click", () => loadTa({ mode: "universe" }));
+  if ($("ta-back")) $("ta-back").addEventListener("click", showTaList);
+  if ($("ta-scan")) $("ta-scan").addEventListener("click", () => loadTa({ mode: "universe", force: true }));
   if ($("ta-rating")) $("ta-rating").addEventListener("change", paintTa);
   if ($("ta-q")) $("ta-q").addEventListener("input", paintTa);
   if ($("ta-all")) {
@@ -3319,7 +3420,7 @@ function bindUi() {
   }
   if ($("period")) {
     $("period").addEventListener("change", () => {
-      if (state.view === "ta") loadTa();
+      if (state.view === "ta") loadTa({ force: state.taMode !== "ticker" });
     });
   }
   if ($("port-load")) $("port-load").addEventListener("click", () => loadPortfolios(true));
@@ -3351,7 +3452,7 @@ function bindUi() {
     }
     if (state.view === "options") loadOptions({ autoRefresh: false });
     if (state.view === "volume") loadVolume({ autoRefresh: false });
-    if (state.view === "ta" && state.taMode === "universe") loadTa({ mode: "universe" });
+    if (state.view === "ta" && state.taMode === "universe") loadTa({ mode: "universe", force: true });
     if (state.view === "portfolios") loadPortfolios(false);
   });
   $("scan-form").addEventListener("submit", async (e) => {

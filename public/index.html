@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Equities Desk</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261030b" />
+  <link rel="stylesheet" href="/static/style.css?v=20261030c" />
 </head>
 <body data-api="" data-page="" data-ticker="" data-period="5y" data-horizon="5">
 <script>
@@ -231,6 +231,7 @@
       <span id="ta-status">Fibonacci buys hold the 200-day. A strong buy is a large profitable company under a flat or rising 200-week average, the way Microsoft trades when it loses that line. A falling 200-week is not that buy.</span>
     </p>
     <div class="toolbar compact">
+      <button type="button" class="ghost" id="ta-back" hidden>Back to list</button>
       <button type="button" class="primary" id="ta-load">Load ticker</button>
       <button type="button" id="ta-scan">Scan universe</button>
       <span class="hint">History length is the toolbar setting above.</span>
@@ -256,7 +257,7 @@
     <div id="ta-empty" class="empty">Enter a ticker for its Fibonacci ladder, or scan the universe.</div>
     <div id="ta-summary"></div>
     <div id="ta-chart-wrap" class="chart-box" hidden>
-      <div class="chart-title"><span>Close, 50-day, 200-day, Fibonacci</span><span class="hint" id="ta-chart-sub"></span></div>
+      <div class="chart-title"><span>Close, 50-day, 200-day, 200-week</span><span class="hint" id="ta-chart-sub"></span></div>
       <div class="chart-canvas"><canvas id="ta-chart"></canvas></div>
     </div>
     <div class="board-count" id="ta-count"></div>
@@ -379,6 +380,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js?v=20261030b"></script>
+  <script src="/static/app.js?v=20261030c"></script>
 </body>
 </html>

@@ -477,7 +477,11 @@ label.has-tip:hover .tip, label.has-tip:focus-within .tip { display: block; }
   text-transform: uppercase; letter-spacing: .07em; font-weight: 700;
 }
 .chart-title .hint-inline { text-transform: none; letter-spacing: 0; font-weight: 500; }
-.chart-canvas { position: relative; flex: 1; min-height: 0; }
+.chart-canvas { position: relative; flex: 1; min-height: 220px; }
+#view-ta { max-width: 100%; min-width: 0; }
+#ta-chart-wrap { width: 100%; max-width: 100%; height: 340px; }
+#ta-chart-wrap .chart-canvas { height: 280px; min-height: 280px; }
+.back-row { margin: 0 0 .7rem; }
 .chart-canvas canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
 .dive-charts .chart-box { height: 260px; }
 .dive-equity { margin-top: .85rem; height: 300px; }
