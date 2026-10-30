@@ -479,6 +479,18 @@ label.has-tip:hover .tip, label.has-tip:focus-within .tip { display: block; }
 .chart-title .hint-inline { text-transform: none; letter-spacing: 0; font-weight: 500; }
 .chart-canvas { position: relative; flex: 1; min-height: 220px; }
 #view-ta { max-width: 100%; min-width: 0; }
+#ta-list .table-scroll { max-height: none; overflow-y: visible; }
+#ta-list .drivers td,
+#ta-list .drivers th {
+  padding: .28rem .4rem;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+#ta-list .ta-why {
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 #ta-chart-wrap { width: 100%; max-width: 100%; height: 340px; }
 #ta-chart-wrap .chart-canvas { height: 280px; min-height: 280px; }
 .back-row { margin: 0 0 .7rem; }

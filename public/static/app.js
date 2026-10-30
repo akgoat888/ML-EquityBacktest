@@ -2369,6 +2369,10 @@ function showTaList() {
 function paintTa({ keepChart = false } = {}) {
   const list = $("ta-list");
   if (!list) return;
+  const scrollY = window.scrollY;
+  const held = list.querySelector(".table-scroll");
+  const heldTop = held ? held.scrollTop : 0;
+  const heldLeft = held ? held.scrollLeft : 0;
   renderTaKpis();
   const filters = $("ta-filters");
   const chartWrap = $("ta-chart-wrap");
@@ -2406,7 +2410,7 @@ function paintTa({ keepChart = false } = {}) {
         <td class="num">${fmt(lv.price)}</td>
         <td class="num">${signedPct(lv.distance)}</td>
         <td class="${taActionClass(lv.action)}">${esc(lv.action)}</td>
-        <td>${esc(lv.note || "")}${lv.active ? " · price is here" : ""}</td>
+        <td class="ta-why" title="${esc(lv.note || "")}">${esc(lv.note || "")}${lv.active ? " · price is here" : ""}</td>
       </tr>`).join("")}</tbody></table></div></div>`;
     bindSortHeaders(list, state.taSort, () => paintTa({ keepChart: true }));
     return;
@@ -2454,7 +2458,7 @@ function paintTa({ keepChart = false } = {}) {
       <td>${esc(r.volume_state || "—")}</td>
       <td class="num">${r.volume_ratio == null ? "—" : Number(r.volume_ratio).toFixed(1) + "×"}</td>
       <td class="num">${r.score == null ? "—" : Number(r.score).toFixed(0)}</td>
-      <td>${esc(r.why || "")}</td>
+      <td class="ta-why" title="${esc(r.why || "")}">${esc(r.why || "")}</td>
     </tr>`).join("")}</tbody></table></div></div>`;
   bindSortHeaders(list, state.taSort, paintTa);
   list.querySelectorAll("[data-ta]").forEach((a) => {
@@ -2463,6 +2467,12 @@ function paintTa({ keepChart = false } = {}) {
       loadTaTicker(a.dataset.ta);
     });
   });
+  const scroller = list.querySelector(".table-scroll");
+  if (scroller) {
+    scroller.scrollTop = heldTop;
+    scroller.scrollLeft = heldLeft;
+  }
+  window.scrollTo(window.scrollX, scrollY);
 }
 
 async function loadTaTicker(ticker) {
@@ -2483,6 +2493,7 @@ async function loadTaTicker(ticker) {
   $("ta-empty").textContent = `Drawing Fibonacci levels for ${t}…`;
   $("ta-list").innerHTML = "";
   setBusy("ta-load", true);
+  setBusy("ta-scan", false);
   showQuote(t);
   try {
     const data = await api("/ta?ticker=" + encodeURIComponent(t) + "&period=" + encodeURIComponent(taPeriod()));
