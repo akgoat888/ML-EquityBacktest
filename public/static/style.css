@@ -491,6 +491,29 @@ label.has-tip:hover .tip, label.has-tip:focus-within .tip { display: block; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.gtc-panel { margin: .35rem 0 .7rem; }
+.gtc-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .65rem;
+  margin-bottom: .45rem;
+}
+.gtc-bar label { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted); font-size: .82rem; }
+.gtc-bar input { width: 5.2rem; padding: .32rem .45rem; }
+.gtc-kicker { font-size: .72rem; font-weight: 700; letter-spacing: .08em; color: var(--muted); }
+.gtc-buy, .gtc-sell {
+  padding: .22rem .55rem; font-size: .75rem; line-height: 1.2; border-radius: var(--r-xs);
+}
+.gtc-buy { color: #07120c; background: var(--high); border-color: transparent; }
+.gtc-sell { color: #fff; background: #c23b3b; border-color: transparent; }
+.gtc-buy:hover { background: #5cf0b1; }
+.gtc-sell:hover { background: #d24a4a; }
+.gtc-buy.is-suggested, .gtc-sell.is-suggested { box-shadow: 0 0 0 1px #f3f7fb; }
+.gtc-book { display: flex; flex-direction: column; gap: .28rem; }
+.gtc-line {
+  display: flex; align-items: center; gap: .55rem;
+  font-size: .82rem; font-variant-numeric: tabular-nums;
+}
+.gtc-line .icon-btn { width: 1.5rem; height: 1.5rem; font-size: .8rem; }
+.gtc-cell { display: flex; gap: .28rem; }
 #ta-chart-wrap { width: 100%; max-width: 100%; height: 340px; }
 #ta-chart-wrap .chart-canvas { height: 280px; min-height: 280px; }
 .back-row { margin: 0 0 .7rem; }

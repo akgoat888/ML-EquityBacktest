@@ -2144,7 +2144,7 @@ const TA_LEVEL_COLS = [
   { key: "ratio", label: "Level", num: true },
   { key: "price", label: "Price", num: true },
   { key: "distance", label: "From last", num: true },
-  { key: "action", label: "BUY / SELL" },
+  { key: "action", label: "Order" },
   { key: "note", label: "Role" },
 ];
 
@@ -2348,6 +2348,73 @@ function taChart(candles, levels) {
   });
 }
 
+function gtcOrders() {
+  try {
+    const rows = JSON.parse(localStorage.getItem("desk_gtc") || "[]");
+    return Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveGtc(rows) {
+  localStorage.setItem("desk_gtc", JSON.stringify(rows.slice(0, 80)));
+}
+
+function gtcSizePct() {
+  const el = $("gtc-size");
+  const n = Number(el ? el.value : 25);
+  if (!Number.isFinite(n) || n <= 0 || n > 100) return null;
+  return Math.round(n * 10) / 10;
+}
+
+function renderGtcBook() {
+  const panel = $("ta-orders");
+  const box = $("gtc-book");
+  if (!panel || !box) return;
+  const detail = state.taMode === "ticker" ? state.taDetail : null;
+  panel.hidden = !detail;
+  if (!detail) return;
+  const ticker = detail.ticker || activeTicker();
+  const rows = gtcOrders().filter((o) => o.ticker === ticker);
+  if (!rows.length) {
+    box.innerHTML = `<p class="hint">No working GTC orders for ${esc(ticker)}.</p>`;
+    return;
+  }
+  box.innerHTML = rows.map((o) => `<div class="gtc-line">
+    <span class="${o.side === "SELL" ? "flag-sell" : "flag-buy"}">${esc(o.side)}</span>
+    <span>${esc(String(o.size))}% GTC at ${fmt(o.price)}</span>
+    <span class="hint">${o.level && o.level !== "limit" ? esc(o.level) : "limit"}</span>
+    <button type="button" class="icon-btn" data-gtc-drop="${esc(o.id)}" aria-label="Remove order">×</button>
+  </div>`).join("");
+}
+
+function addGtc(side, price, level) {
+  const ticker = (state.taDetail && state.taDetail.ticker) || activeTicker();
+  const size = gtcSizePct();
+  const px = Number(price);
+  if (!ticker) return;
+  if (size == null || !Number.isFinite(px) || px <= 0) {
+    toast("Enter a size from 1 to 100 and a limit price.", "err");
+    return;
+  }
+  const rows = gtcOrders().filter((o) => !(o.ticker === ticker && o.side === side && Number(o.price) === px));
+  rows.unshift({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    ticker,
+    side,
+    size,
+    price: px,
+    level: level || "limit",
+    tif: "GTC",
+  });
+  saveGtc(rows);
+  if ($("gtc-size")) localStorage.setItem("desk_gtc_size", String(size));
+  if ($("gtc-limit")) $("gtc-limit").value = String(px);
+  renderGtcBook();
+  toast(`${side} ${size}% GTC at ${fmt(px)}`);
+}
+
 function showTaList() {
   state.taMode = "universe";
   state.taDetail = null;
@@ -2357,6 +2424,7 @@ function showTaList() {
   if (wrap) wrap.hidden = true;
   if ($("ta-back")) $("ta-back").hidden = true;
   if (location.pathname === "/ta") history.replaceState({ view: "ta" }, "", "/ta");
+  renderGtcBook();
   if ((state.taRows || []).length) {
     $("ta-empty").hidden = true;
     $("ta-status").textContent = `${state.taRows.length} names from the last scan`;
@@ -2395,6 +2463,7 @@ function paintTa({ keepChart = false } = {}) {
       $("ta-empty").hidden = false;
       $("ta-empty").textContent = detail.why || "No Fibonacci ladder for this history.";
       list.innerHTML = "";
+      renderGtcBook();
       return;
     }
     $("ta-empty").hidden = true;
@@ -2409,15 +2478,20 @@ function paintTa({ keepChart = false } = {}) {
         <td class="num">${esc(lv.label)}</td>
         <td class="num">${fmt(lv.price)}</td>
         <td class="num">${signedPct(lv.distance)}</td>
-        <td class="${taActionClass(lv.action)}">${esc(lv.action)}</td>
+        <td><span class="gtc-cell">
+          <button type="button" class="gtc-buy${lv.action === "BUY" ? " is-suggested" : ""}" data-gtc="BUY" data-price="${esc(String(lv.price))}" data-level="${esc(lv.label || "")}">Buy</button>
+          <button type="button" class="gtc-sell${lv.action === "SELL" ? " is-suggested" : ""}" data-gtc="SELL" data-price="${esc(String(lv.price))}" data-level="${esc(lv.label || "")}">Sell</button>
+        </span></td>
         <td class="ta-why" title="${esc(lv.note || "")}">${esc(lv.note || "")}${lv.active ? " · price is here" : ""}</td>
       </tr>`).join("")}</tbody></table></div></div>`;
     bindSortHeaders(list, state.taSort, () => paintTa({ keepChart: true }));
+    renderGtcBook();
     return;
   }
   if (back) back.hidden = true;
   if (filters) filters.hidden = false;
   renderTaSummary(null);
+  renderGtcBook();
   destroyTaChart();
   if (chartWrap) chartWrap.hidden = true;
   const rows = filteredTaRows();
@@ -3417,6 +3491,31 @@ function bindUi() {
     });
   }
   if ($("volume-load")) $("volume-load").addEventListener("click", () => loadVolume());
+  if ($("gtc-size")) {
+    const savedSize = localStorage.getItem("desk_gtc_size");
+    if (savedSize) $("gtc-size").value = savedSize;
+    $("gtc-size").addEventListener("change", () => {
+      const n = gtcSizePct();
+      if (n != null) localStorage.setItem("desk_gtc_size", String(n));
+    });
+  }
+  if ($("gtc-buy")) $("gtc-buy").addEventListener("click", () => addGtc("BUY", $("gtc-limit") && $("gtc-limit").value, "limit"));
+  if ($("gtc-sell")) $("gtc-sell").addEventListener("click", () => addGtc("SELL", $("gtc-limit") && $("gtc-limit").value, "limit"));
+  if ($("ta-orders")) {
+    $("ta-orders").addEventListener("click", (e) => {
+      const drop = e.target.closest("[data-gtc-drop]");
+      if (!drop) return;
+      saveGtc(gtcOrders().filter((o) => o.id !== drop.dataset.gtcDrop));
+      renderGtcBook();
+    });
+  }
+  if ($("ta-list")) {
+    $("ta-list").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-gtc]");
+      if (!btn || !btn.dataset.price) return;
+      addGtc(btn.dataset.gtc, btn.dataset.price, btn.dataset.level || "");
+    });
+  }
   if ($("ta-load")) $("ta-load").addEventListener("click", () => loadTaTicker(activeTicker()));
   if ($("ta-back")) $("ta-back").addEventListener("click", showTaList);
   if ($("ta-scan")) $("ta-scan").addEventListener("click", () => loadTa({ mode: "universe", force: true }));
