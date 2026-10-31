@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Equities Desk</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261030g" />
+  <link rel="stylesheet" href="/static/style.css?v=20261031a" />
 </head>
 <body data-api="" data-page="" data-ticker="" data-period="5y" data-horizon="5">
 <script>
@@ -35,6 +35,8 @@
   } else if (path === "/ta") {
     page = "ta";
     ticker = q.get("ticker") || "";
+  } else if (path === "/upcoming") {
+    page = "upcoming";
   } else if (path === "/portfolios") {
     page = "portfolios";
   } else if (path === "/etfs") {
@@ -58,6 +60,7 @@
       <a href="/options" data-view="options">Options</a>
       <a href="/volume" data-view="volume">Volume</a>
       <a href="/ta" data-view="ta">TA</a>
+      <a href="/upcoming" data-view="upcoming">Upcoming</a>
       <a href="/financials" data-view="financials">Financials</a>
       <a href="/portfolios" data-view="portfolios">Portfolios</a>
       <a href="/etfs" data-view="etfs">ETFs</a>
@@ -264,6 +267,19 @@
     <div id="ta-list"></div>
   </section>
 
+  <section id="view-upcoming" class="view" hidden>
+    <p class="hint status-line">
+      <span id="up-status">Solid businesses whose annual free cash flow grows at a steady pace. A softer quarter stays on the list and is flagged with the dollar decline.</span>
+    </p>
+    <div class="toolbar compact">
+      <button type="button" id="up-scan">Scan universe</button>
+      <span class="hint">Uses the universe selected above. A name like Walmart stays if the year is still climbing.</span>
+    </div>
+    <div id="up-empty" class="empty">Scan a universe for businesses with steadily growing free cash flow.</div>
+    <div class="board-count" id="up-count"></div>
+    <div id="up-list"></div>
+  </section>
+
   <section id="view-financials" class="view" hidden>
     <div class="toolbar compact fin-toolbar">
       <label>Statements
@@ -346,6 +362,7 @@
     <a href="/options" data-view="options">Options</a>
     <a href="/volume" data-view="volume">Volume</a>
     <a href="/ta" data-view="ta">TA</a>
+    <a href="/upcoming" data-view="upcoming" title="Upcoming">Up</a>
     <a href="/financials" data-view="financials" title="Financials">Fin</a>
     <a href="/portfolios" data-view="portfolios" title="Portfolios">Ports</a>
     <a href="/etfs" data-view="etfs" title="ETFs">ETFs</a>
@@ -370,6 +387,7 @@
         <div class="shortcut-row"><span>Go to Options</span><kbd>g</kbd> <kbd>o</kbd></div>
         <div class="shortcut-row"><span>Go to Volume</span><kbd>g</kbd> <kbd>v</kbd></div>
         <div class="shortcut-row"><span>Go to TA</span><kbd>g</kbd> <kbd>t</kbd></div>
+        <div class="shortcut-row"><span>Go to Upcoming</span><kbd>g</kbd> <kbd>u</kbd></div>
         <div class="shortcut-row"><span>Go to Financials</span><kbd>g</kbd> <kbd>f</kbd></div>
         <div class="shortcut-row"><span>Go to Portfolios</span><kbd>g</kbd> <kbd>p</kbd></div>
         <div class="shortcut-row"><span>Go to ETFs</span><kbd>g</kbd> <kbd>e</kbd></div>
@@ -380,6 +398,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="/static/app.js?v=20261030g"></script>
+  <script src="/static/app.js?v=20261031a"></script>
 </body>
 </html>

@@ -380,6 +380,36 @@ def technicals(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.get("/upcoming")
+def upcoming(
+    response: Response,
+    ticker: str | None = Query(default=None),
+    universe: str | None = Query(default=None),
+    cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=4, ge=1, le=6),
+) -> dict[str, Any]:
+    from aieq.upcoming import analyze_symbol, scan_universe
+
+    if ticker and ticker.strip():
+        try:
+            return _cached(
+                response,
+                "upcoming_api_v1_" + _safe_key(ticker.strip().upper()),
+                6 * 3600,
+                lambda: analyze_symbol(ticker),
+                "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return scan_universe(universe or "mega", cursor=cursor, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/portfolios")
 def portfolios(
     response: Response,

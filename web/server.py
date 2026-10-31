@@ -50,6 +50,11 @@ def ta_page():
     return _desk("ta", ticker=request.args.get("ticker", ""))
 
 
+@app.route("/upcoming")
+def upcoming_page():
+    return _desk("upcoming")
+
+
 @app.route("/financials")
 @app.route("/financials/<path:ticker>")
 def financials_page(ticker: str = ""):
@@ -280,6 +285,28 @@ def api_ta():
                 period=period,
                 cursor=request.args.get("cursor", default=0, type=int) or 0,
                 limit=request.args.get("limit", default=8, type=int) or 8,
+            )
+        )
+    except Exception as exc:
+        return _json_error(exc, 500)
+
+
+@app.route("/api/upcoming")
+def api_upcoming():
+    from aieq.upcoming import analyze_symbol, scan_universe
+
+    ticker = (request.args.get("ticker") or "").strip()
+    if ticker:
+        try:
+            return jsonify(analyze_symbol(ticker))
+        except Exception as exc:
+            return _json_error(exc)
+    try:
+        return jsonify(
+            scan_universe(
+                request.args.get("universe") or "mega",
+                cursor=request.args.get("cursor", default=0, type=int) or 0,
+                limit=request.args.get("limit", default=4, type=int) or 4,
             )
         )
     except Exception as exc:

@@ -529,6 +529,35 @@ label.has-tip:hover .tip, label.has-tip:focus-within .tip { display: block; }
   max-width: 28rem;
   line-height: 1.35;
 }
+#up-list .table-card { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+#up-list .table-scroll {
+  position: sticky;
+  top: var(--desk-top, 4.6rem);
+  z-index: 4;
+  max-height: calc(100dvh - var(--desk-top, 4.6rem) - .4rem);
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-1);
+}
+#up-list .drivers thead th {
+  position: sticky; top: 0; z-index: 3; background: #171e28;
+}
+#up-list .drivers th:first-child,
+#up-list .drivers td:first-child {
+  position: sticky; left: 0; z-index: 2; background: #12181f;
+  box-shadow: 1px 0 0 var(--line-soft);
+}
+#up-list .drivers thead th:first-child { z-index: 5; background: #171e28; }
+#up-list .drivers tbody tr:nth-child(even) td:first-child { background: #161d26; }
+#up-list .drivers tbody tr:hover td:first-child { background: #1c2836; }
+#up-list .drivers td,
+#up-list .drivers th {
+  padding: .28rem .4rem; white-space: nowrap; vertical-align: middle;
+}
+#up-list .ta-why { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; }
+.up-flag { color: var(--hold); font-weight: 650; }
 #ta-chart-wrap { width: 100%; max-width: 100%; height: 340px; }
 #ta-chart-wrap .chart-canvas { height: 280px; min-height: 280px; }
 .back-row { margin: 0 0 .7rem; }
@@ -853,7 +882,8 @@ kbd {
   .name-card { min-width: 0; }
   .chart-box, .dive-charts .chart-box, .dive-equity, .port-chart { height: 210px; }
   .table-scroll, .stmt-wrap { -webkit-overflow-scrolling: touch; }
-  #ta-list .table-scroll {
+  #ta-list .table-scroll,
+  #up-list .table-scroll {
     max-height: calc(100dvh - var(--desk-top, 3.4rem) - 4.8rem - env(safe-area-inset-bottom));
   }
   .drivers { font-size: .8rem; }
@@ -882,7 +912,7 @@ kbd {
   .sector-row { grid-template-columns: minmax(6.5rem, 9rem) 1fr 3rem; }
   .mobile-nav {
     display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    grid-template-columns: repeat(8, 1fr);
     position: fixed;
     left: 0; right: 0; bottom: 0;
     z-index: 50;

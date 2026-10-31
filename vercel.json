@@ -34,6 +34,7 @@
     { "source": "/options", "destination": "/index.html" },
     { "source": "/volume", "destination": "/index.html" },
     { "source": "/ta", "destination": "/index.html" },
+    { "source": "/upcoming", "destination": "/index.html" },
     { "source": "/portfolios", "destination": "/index.html" },
     { "source": "/etfs", "destination": "/index.html" }
   ]

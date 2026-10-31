@@ -37,6 +37,10 @@ const state = {
   taChart: null,
   taDetail: null,
   taMode: "",
+  upRows: [],
+  upSort: { key: "pace", dir: "desc" },
+  upToken: 0,
+  upUni: "",
   boardCache: {},
   shellUni: null,
   portCache: {},
@@ -299,7 +303,7 @@ function sma(values, window) {
 async function api(path, opts = {}) {
   const urls = [API + path];
   const base = path.split("?")[0];
-  if (/^\/(financials|options|volume|ta|portfolios|etfs|quote|search|analyze)/.test(base)) {
+  if (/^\/(financials|options|volume|ta|upcoming|portfolios|etfs|quote|search|analyze)/.test(base)) {
     urls.push(window.location.origin + "/api" + path);
   }
   let lastErr = new Error("Request failed");
@@ -458,6 +462,7 @@ const VIEW_META = {
   options: { title: "Options · AI Equities Desk", sub: "Options · Call/Put premium ≥ $1M" },
   volume: { title: "Volume · AI Equities Desk", sub: "Volume · concentrated $10M+ prints" },
   ta: { title: "TA · AI Equities Desk", sub: "TA · Fibonacci, 200-week strong buys, volume" },
+  upcoming: { title: "Upcoming · AI Equities Desk", sub: "Upcoming · steady free cash flow, solid businesses" },
   financials: { title: "Financials · AI Equities Desk", sub: "Financials · statements + stance" },
   portfolios: { title: "Portfolios · AI Equities Desk", sub: "Portfolios · four risk tiers per horizon" },
   etfs: { title: "ETFs · AI Equities Desk", sub: "ETFs · funds expected to outrun the S&P 500" },
@@ -493,7 +498,7 @@ function setPortUniverse(val) {
 function setView(name, { ticker } = {}) {
   state.view = name;
   if (name !== "ta") destroyTaChart();
-  ["home", "dive", "options", "volume", "ta", "financials", "portfolios", "etfs"].forEach((key) => {
+  ["home", "dive", "options", "volume", "ta", "upcoming", "financials", "portfolios", "etfs"].forEach((key) => {
     const el = $("view-" + key);
     if (!el) return;
     el.hidden = key !== name;
@@ -681,6 +686,7 @@ function showPage(name, push = true) {
   if (name === "options") loadOptions();
   if (name === "volume") loadVolume();
   if (name === "ta") loadTa();
+  if (name === "upcoming") loadUpcoming();
   if (name === "portfolios") loadPortfolios();
   if (name === "etfs") loadEtfs(false);
   if (name === "financials") {
@@ -759,6 +765,7 @@ function reloadCurrentView() {
   if (state.view === "options") loadOptions();
   else if (state.view === "volume") loadVolume();
   else if (state.view === "ta") loadTa();
+  else if (state.view === "upcoming") loadUpcoming({ force: true });
   else if (state.view === "portfolios") loadPortfolios(false);
   else if (state.view === "etfs") loadEtfs(false);
   else if (state.view === "financials" && t) loadFinancials(t);
@@ -903,7 +910,7 @@ function isTyping(e) {
 
 function bindShortcuts() {
   let gAt = 0;
-  const GO = { h: "home", o: "options", v: "volume", t: "ta", f: "financials", p: "portfolios", e: "etfs" };
+  const GO = { h: "home", o: "options", v: "volume", t: "ta", u: "upcoming", f: "financials", p: "portfolios", e: "etfs" };
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       acClose();
@@ -2592,6 +2599,126 @@ function loadTa({ mode, force } = {}) {
   return loadTaUniverse();
 }
 
+const UP_COLS = [
+  { key: "ticker", label: "Ticker" },
+  { key: "rating", label: "Guide" },
+  { key: "pace", label: "FCF pace", num: true },
+  { key: "fcf_annual", label: "Annual FCF", num: true },
+  { key: "fcf_latest", label: "Latest quarter", num: true },
+  { key: "fcf_change", label: "Quarter change", num: true },
+  { key: "flag", label: "Flag" },
+  { key: "why", label: "Why" },
+];
+
+function paintUpcoming() {
+  const list = $("up-list");
+  if (!list) return;
+  const scrollY = window.scrollY;
+  const held = list.querySelector(".table-scroll");
+  const heldTop = held ? held.scrollTop : 0;
+  const heldLeft = held ? held.scrollLeft : 0;
+  const rows = state.upRows || [];
+  const count = $("up-count");
+  if (count) count.innerHTML = rows.length ? `<b>${rows.length}</b> businesses` : "";
+  if (!rows.length) {
+    list.innerHTML = "";
+    return;
+  }
+  $("up-empty").hidden = true;
+  ensureSort(state.upSort, UP_COLS, "pace");
+  const sorted = sortByKey(rows, state.upSort.key, state.upSort.dir);
+  list.innerHTML = `<div class="table-card"><div class="table-scroll"><table class="drivers">
+    <thead><tr>${sortableHead(UP_COLS, state.upSort)}</tr></thead>
+    <tbody>${sorted.map((r) => `<tr>
+      <td><a href="/financials/${encodeURIComponent(r.ticker || "")}" data-up="${esc(r.ticker)}">${esc(r.ticker)}</a></td>
+      <td class="${ratingClass(r.rating)}">${esc(r.rating || "—")}</td>
+      <td class="num">${signedPct(r.pace, 0)}</td>
+      <td class="num">${money(r.fcf_annual)}</td>
+      <td class="num">${money(r.fcf_latest)}</td>
+      <td class="num ${Number(r.fcf_change) < 0 ? "up-flag" : "pos"}">${r.fcf_change == null ? "—" : money(r.fcf_change)}</td>
+      <td class="${r.flagged ? "up-flag" : "pos"}">${r.flagged ? "Cash flow down" : "Steady"}</td>
+      <td class="ta-why" title="${esc(r.why || r.flag || "")}">${esc(r.why || "")}</td>
+    </tr>`).join("")}</tbody></table></div></div>`;
+  bindSortHeaders(list, state.upSort, paintUpcoming);
+  list.querySelectorAll("[data-up]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const t = rememberTicker(a.dataset.up);
+      if (!t) return;
+      showPage("financials", true);
+    });
+  });
+  const scroller = list.querySelector(".table-scroll");
+  if (scroller) {
+    scroller.scrollTop = heldTop;
+    scroller.scrollLeft = heldLeft;
+  }
+  window.scrollTo(window.scrollX, scrollY);
+}
+
+async function loadUpcoming({ force = false } = {}) {
+  const uni = $("universe") ? $("universe").value : "mega";
+  if (!force && state.upUni === uni && (state.upRows || []).length) {
+    if ($("up-empty")) $("up-empty").hidden = true;
+    paintUpcoming();
+    return;
+  }
+  const token = ++state.upToken;
+  state.upRows = [];
+  state.upUni = uni;
+  state.upSort = { key: "pace", dir: "desc" };
+  if ($("up-empty")) {
+    $("up-empty").hidden = false;
+    $("up-empty").textContent = "Scanning for steady free cash flow…";
+  }
+  if ($("up-list")) $("up-list").innerHTML = "";
+  setBusy("up-scan", true);
+  let cursor = 0;
+  let guard = 0;
+  let scanned = 0;
+  try {
+    while (guard < 160 && token === state.upToken && state.view === "upcoming") {
+      guard += 1;
+      const data = await api(
+        "/upcoming?universe=" + encodeURIComponent(uni) +
+        "&cursor=" + cursor +
+        "&limit=4"
+      );
+      if (token !== state.upToken || state.view !== "upcoming") return;
+      const seen = new Set(state.upRows.map((r) => r.ticker));
+      for (const row of data.rows || []) {
+        if (row && row.ticker && row.included !== false && !seen.has(row.ticker)) state.upRows.push(row);
+      }
+      const total = Number(data.total || 0);
+      scanned = Math.min(Number(data.next_cursor || scanned), total || scanned);
+      if ($("up-status")) {
+        $("up-status").textContent = total
+          ? `${state.upRows.length} upcoming · scanned ${scanned} of ${total}. A softer quarter stays, flagged with the dollar decline.`
+          : "Scanning for steady free cash flow…";
+      }
+      if ($("up-empty")) $("up-empty").hidden = state.upRows.length > 0;
+      paintUpcoming();
+      if (data.done) break;
+      const next = Number(data.next_cursor);
+      if (!Number.isFinite(next) || next <= cursor) break;
+      cursor = next;
+    }
+    if (token === state.upToken && !state.upRows.length && $("up-empty")) {
+      $("up-empty").hidden = false;
+      $("up-empty").textContent = "No business in this universe has free cash flow growing at a steady pace.";
+    }
+  } catch (err) {
+    if (token !== state.upToken) return;
+    if ($("up-empty")) {
+      $("up-empty").hidden = !state.upRows.length;
+      if (!state.upRows.length) $("up-empty").textContent = err.message;
+    }
+    toast(err.message, "err");
+  } finally {
+    if (token === state.upToken) setBusy("up-scan", false);
+  }
+}
+
 function stmtTable(title, stmt) {
   if (!stmt || !(stmt.rows || []).length) return `<p class="hint">${title}: no Yahoo statement.</p>`;
   const head = (stmt.columns || []).map((c, i) =>
@@ -3429,6 +3556,7 @@ function bindUi() {
   if ($("ta-load")) $("ta-load").addEventListener("click", () => loadTaTicker(activeTicker()));
   if ($("ta-back")) $("ta-back").addEventListener("click", showTaList);
   if ($("ta-scan")) $("ta-scan").addEventListener("click", () => loadTa({ mode: "universe", force: true }));
+  if ($("up-scan")) $("up-scan").addEventListener("click", () => loadUpcoming({ force: true }));
   if ($("ta-rating")) $("ta-rating").addEventListener("change", paintTa);
   if ($("ta-q")) $("ta-q").addEventListener("input", paintTa);
   if ($("ta-all")) {
@@ -3473,6 +3601,7 @@ function bindUi() {
     if (state.view === "options") loadOptions({ autoRefresh: false });
     if (state.view === "volume") loadVolume({ autoRefresh: false });
     if (state.view === "ta" && state.taMode === "universe") loadTa({ mode: "universe", force: true });
+    if (state.view === "upcoming") loadUpcoming({ force: true });
     if (state.view === "portfolios") loadPortfolios(false);
   });
   $("scan-form").addEventListener("submit", async (e) => {
@@ -3548,7 +3677,7 @@ async function boot() {
     setView("financials");
     setFinFreq(finFreq());
     if (initial) loadFinancials(initial);
-  } else if (page === "options" || page === "volume" || page === "ta" || page === "portfolios" || page === "etfs") showPage(page, false);
+  } else if (page === "options" || page === "volume" || page === "ta" || page === "upcoming" || page === "portfolios" || page === "etfs") showPage(page, false);
   else setView("home");
   updatePeriodTags();
   applyViewMode(state.view);
